@@ -167,7 +167,7 @@ async function adminApi(req,env,url) {
     }
     return Response.json(await db(env,"force_join",{method:"POST",headers:{"Prefer":"return=representation"},body:JSON.stringify({name:b.name.trim(),invite_link:b.invite_link.trim(),chat_id:b.chat_id.trim(),active:true})}));
   }
-  const m=url.pathname.match(/^\\/api\\/admin\\/groups\\/(\\d+)$/);
+  const m = url.pathname.match(/^\/api\/admin\/groups\/(\d+)$/);
   if (m && req.method==="PATCH") {
     const b=await req.json();
     const patch = {};
