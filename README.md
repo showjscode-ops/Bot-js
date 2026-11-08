@@ -20,6 +20,7 @@ npx wrangler login
 npx wrangler secret put BOT_TOKEN
 npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 npx wrangler secret put ADMIN_PASSWORD
+npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
 ```
 Set `SUPABASE_URL` in `wrangler.toml`, then:
 ```bash
@@ -28,10 +29,11 @@ npm run deploy
 Use the deployed Worker URL as `WORKER_URL`.
 
 ## 4. Set webhook
-Open this URL in a browser after replacing values:
-`https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=<WORKER_URL>/webhook&allowed_updates=%5B%22message%22,%22callback_query%22,%22chat_member%22%5D`
+Set webhook with Telegram's secret-token protection. Use a random secret of 1–256 characters containing only letters, digits, `_`, or `-`, and save the same value as the Cloudflare Worker secret `TELEGRAM_WEBHOOK_SECRET`:
 
-For chat_member updates Telegram requires the bot to be administrator in the relevant chats. Users can also press the Verify button.
+`https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=<WORKER_URL>/webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>&allowed_updates=%5B%22message%22,%22callback_query%22,%22chat_member%22%5D`
+
+For `chat_member` updates Telegram requires the bot to be administrator in the relevant chats. Users can also press the Verify button.
 
 ## 5. Admin panel
 Open `https://<worker-subdomain>.workers.dev/admin`. Browser asks for Basic Auth:
@@ -45,7 +47,9 @@ Create a GitHub repository and push this project to branch `main`. In repository
 - `CLOUDFLARE_API_TOKEN` (Workers Scripts: Edit permission)
 - `CLOUDFLARE_ACCOUNT_ID`
 
-Push to `main` to deploy. Also configure `SUPABASE_URL` in `wrangler.toml`. Add Worker secrets in Cloudflare dashboard (or deploy them once with Wrangler); GitHub workflow deploys code, not secret values.
+Push to `main` to deploy. Also configure `SUPABASE_URL` in `wrangler.toml`. Add Worker secrets in Cloudflare dashboard (or deploy them once with Wrangler): `BOT_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_PASSWORD`, and `TELEGRAM_WEBHOOK_SECRET`. GitHub workflow deploys code, not secret values.
+
+In Cloudflare Workers Builds, set the project root directory to `/` (repository root). Leave the build command empty; the deploy command is `npx wrangler deploy`. The Worker entry point is the root-level `index.js` so it does not depend on the `src/` folder being included in a deployment upload.
 
 ## Current scope
 - `/start` → language selection.
