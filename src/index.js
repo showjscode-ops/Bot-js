@@ -5,9 +5,21 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/webhook" && request.method === "POST") {
-      const update = await request.json();
-      await handleUpdate(update, env);
-      return new Response("ok");
+      if (!env.TELEGRAM_WEBHOOK_SECRET) {
+        return new Response("Webhook secret is not configured", { status: 503 });
+      }
+      const suppliedSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
+      if (suppliedSecret !== env.TELEGRAM_WEBHOOK_SECRET) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      try {
+        const update = await request.json();
+        await handleUpdate(update, env);
+        return new Response("ok");
+      } catch (error) {
+        console.error("Webhook processing failed:", error);
+        return new Response("Webhook processing failed", { status: 500 });
+      }
     }
     if (url.pathname === "/admin" && request.method === "GET") {
       if (!authorized(request, env)) return new Response("Unauthorized", {status:401,headers:{ "WWW-Authenticate":"Basic realm=Bot Admin"}});
@@ -22,8 +34,8 @@ export default {
 };
 
 function authorized(req, env) {
-  const h=req.headers.get("authorization")||"";
-  if (!h.startsWith("Basic ")) return false;
+  const h = req.headers.get("authorization") || "";
+  if (!env.ADMIN_PASSWORD || !h.startsWith("Basic ")) return false;
   try { return atob(h.slice(6)) === `admin:${env.ADMIN_PASSWORD}`; } catch { return false; }
 }
 async function tg(env, method, body) {
@@ -33,11 +45,25 @@ async function tg(env, method, body) {
   return data;
 }
 async function db(env, path, options={}) {
-  const r=await fetch(`${env.SUPABASE_URL}/rest/v1/${path}`,{
-    ...options, headers:{apikey:env.SUPABASE_SERVICE_ROLE_KEY,authorization:`Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,...headers,...(options.headers||{})}
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error("Supabase configuration is incomplete");
+  }
+  const r = await fetch(`${env.SUPABASE_URL}/rest/v1/${path}`, {
+    ...options,
+    headers: {
+      apikey: env.SUPABASE_SERVICE_ROLE_KEY,
+      authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      ...headers,
+      ...(options.headers || {})
+    }
   });
-  if (!r.ok) console.log("Supabase:",r.status,await r.text());
-  return r.status===204?null:r.json();
+  if (!r.ok) {
+    const detail = await r.text();
+    console.error("Supabase request failed:", r.status, detail);
+    throw new Error(`Supabase request failed (${r.status})`);
+  }
+  if (r.status === 204 || r.headers.get("content-length") === "0") return null;
+  return r.json();
 }
 async function saveUser(env, id, data) {
   await db(env,"bot_users?on_conflict=telegram_id",{method:"POST",headers:{"Prefer":"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({telegram_id:id,...data,updated_at:new Date().toISOString()})});
@@ -87,9 +113,11 @@ async function handleUpdate(u,env) {
   if (u.chat_member) {
     const cm=u.chat_member;
     if (["member","administrator","creator"].includes(cm.new_chat_member?.status)) {
-      const user=cm.from;
-      const pref=await getUser(env,user.id);
-      if (pref?.language) await gateOrMenu(env,user.id,user,pref.language);
+      const user = cm.new_chat_member?.user;
+      if (user?.id) {
+        const pref = await getUser(env, user.id);
+        if (pref?.language) await gateOrMenu(env, user.id, user, pref.language);
+      }
     }
     return;
   }
@@ -134,12 +162,21 @@ async function adminApi(req,env,url) {
   if (url.pathname==="/api/admin/groups" && req.method==="GET") return Response.json(await db(env,"force_join?select=*&order=created_at.desc"));
   if (url.pathname==="/api/admin/groups" && req.method==="POST") {
     const b=await req.json();
-    if (!b.name||!b.invite_link||!b.chat_id) return Response.json({error:"name, invite_link, dan chat_id wajib diisi"},{status:400});
-    return Response.json(await db(env,"force_join",{method:"POST",headers:{"Prefer":"return=representation"},body:JSON.stringify({name:b.name,invite_link:b.invite_link,chat_id:b.chat_id,active:true})}));
+    if (typeof b.name !== "string" || !b.name.trim() || typeof b.invite_link !== "string" || !/^https:\/\/(t\.me|telegram\.me)\//i.test(b.invite_link) || typeof b.chat_id !== "string" || !/^-?\d+$/.test(b.chat_id.trim())) {
+      return Response.json({error:"Nama, link Telegram yang valid, dan chat ID numerik wajib diisi."},{status:400});
+    }
+    return Response.json(await db(env,"force_join",{method:"POST",headers:{"Prefer":"return=representation"},body:JSON.stringify({name:b.name.trim(),invite_link:b.invite_link.trim(),chat_id:b.chat_id.trim(),active:true})}));
   }
   const m=url.pathname.match(/^\\/api\\/admin\\/groups\\/(\\d+)$/);
   if (m && req.method==="PATCH") {
-    const b=await req.json(); return Response.json(await db(env,`force_join?id=eq.${m[1]}`,{method:"PATCH",headers:{"Prefer":"return=representation"},body:JSON.stringify(b)}));
+    const b=await req.json();
+    const patch = {};
+    if (typeof b.name === "string" && b.name.trim()) patch.name = b.name.trim();
+    if (typeof b.invite_link === "string" && /^https:\/\/(t\.me|telegram\.me)\//i.test(b.invite_link)) patch.invite_link = b.invite_link.trim();
+    if (typeof b.chat_id === "string" && /^-?\d+$/.test(b.chat_id.trim())) patch.chat_id = b.chat_id.trim();
+    if (typeof b.active === "boolean") patch.active = b.active;
+    if (!Object.keys(patch).length) return Response.json({error:"Tidak ada perubahan yang valid."},{status:400});
+    return Response.json(await db(env,`force_join?id=eq.${m[1]}`,{method:"PATCH",headers:{"Prefer":"return=representation"},body:JSON.stringify(patch)}));
   }
   if (m && req.method==="DELETE") {
     await db(env,`force_join?id=eq.${m[1]}`,{method:"DELETE"}); return Response.json({ok:true});
