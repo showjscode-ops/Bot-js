@@ -186,9 +186,28 @@ async function adminApi(req,env,url) {
 function adminHtml(){return `<!doctype html><html lang="id"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bot Admin</title><style>
 *{box-sizing:border-box}body{margin:0;background:#0b1020;color:#e8eefc;font:15px system-ui;padding:28px}.wrap{max-width:900px;margin:auto}.card{background:#141d32;border:1px solid #283652;border-radius:18px;padding:22px;margin:16px 0}h1{margin:0 0 8px}p{color:#9eacc5}input{width:100%;padding:12px;border-radius:10px;border:1px solid #344461;background:#0c1528;color:white;margin:6px 0 12px}button{border:0;border-radius:10px;padding:11px 16px;background:#4f7cff;color:white;font-weight:700;cursor:pointer;margin:4px}button.danger{background:#b83c52}.item{padding:14px 0;border-top:1px solid #2b3852;display:flex;gap:10px;justify-content:space-between;align-items:center;flex-wrap:wrap}.muted{color:#9eacc5;font-size:13px}</style><div class="wrap"><h1>⚙️ Bot Admin</h1><p>Kelola daftar wajib join group/channel Telegram.</p><div class="card"><h3>Tambah group / channel</h3><label>Nama tampilan</label><input id="name" placeholder="Contoh: Channel Update"><label>Link undangan</label><input id="link" placeholder="https://t.me/..."><label>Chat ID</label><input id="chat" placeholder="-1001234567890"><button onclick="add()">+ Tambahkan</button><p class="muted">Bot harus menjadi admin di setiap channel/group agar pemeriksaan keanggotaan dapat dilakukan.</p></div><div class="card"><h3>Daftar force join</h3><div id="list">Memuat...</div></div></div><script>
 async function api(path,method="GET",body){let r=await fetch(path,{method,headers:{"content-type":"application/json"},body:body?JSON.stringify(body):undefined});let d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||"Permintaan gagal");return d}
-async function load(){let a=await api("/api/admin/groups");document.querySelector("#list").innerHTML=a.map(x=>`<div class="item"><div><b>${esc(x.name)}</b><div class="muted">${esc(x.invite_link)} · ${esc(x.chat_id)}</div></div><div><button onclick="edit(${x.id},'${js(x.name)}','${js(x.invite_link)}','${js(x.chat_id)}')">Edit</button><button class="danger" onclick="del(${x.id})">Hapus</button></div></div>`).join("")||"Belum ada daftar force join."}
-function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}function js(s){return String(s).replace(/\\\\/g,"\\\\\\\\").replace(/'/g,"\\\\'")}
-async function add(){try{await api("/api/admin/groups","POST",{name:name.value,invite_link:link.value,chat_id:chat.value});name.value=link.value=chat.value="";load()}catch(e){alert(e.message)}}
-async function edit(id,n,l,c){let nn=prompt("Nama",n);if(nn===null)return;let ll=prompt("Link undangan",l);if(ll===null)return;let cc=prompt("Chat ID",c);if(cc===null)return;try{await api("/api/admin/groups/"+id,"PATCH",{name:nn,invite_link:ll,chat_id:cc});load()}catch(e){alert(e.message)}}
-async function del(id){if(!confirm("Hapus daftar ini?"))return;try{await api("/api/admin/groups/"+id,"DELETE");load()}catch(e){alert(e.message)}}load();
+async function load(){
+  const rows=await api("/api/admin/groups");
+  const list=document.querySelector("#list");
+  list.textContent="";
+  if(!Array.isArray(rows)||rows.length===0){list.textContent="Belum ada daftar force join.";return;}
+  rows.forEach(function(x){
+    const item=document.createElement("div"); item.className="item";
+    const info=document.createElement("div");
+    const title=document.createElement("b"); title.textContent=String(x.name||"");
+    const detail=document.createElement("div"); detail.className="muted";
+    detail.textContent=String(x.invite_link||"")+" · "+String(x.chat_id||"");
+    info.append(title,detail);
+    const actions=document.createElement("div");
+    const editButton=document.createElement("button"); editButton.textContent="Edit";
+    editButton.addEventListener("click",function(){edit(x.id,x.name||"",x.invite_link||"",x.chat_id||"");});
+    const deleteButton=document.createElement("button"); deleteButton.className="danger"; deleteButton.textContent="Hapus";
+    deleteButton.addEventListener("click",function(){del(x.id);});
+    actions.append(editButton,deleteButton); item.append(info,actions); list.append(item);
+  });
+}
+async function add(){try{await api("/api/admin/groups","POST",{name:document.querySelector("#name").value,invite_link:document.querySelector("#link").value,chat_id:document.querySelector("#chat").value});document.querySelector("#name").value="";document.querySelector("#link").value="";document.querySelector("#chat").value="";await load();}catch(e){alert(e.message)}}
+async function edit(id,n,l,c){let nn=prompt("Nama",n);if(nn===null)return;let ll=prompt("Link undangan",l);if(ll===null)return;let cc=prompt("Chat ID",c);if(cc===null)return;try{await api("/api/admin/groups/"+id,"PATCH",{name:nn,invite_link:ll,chat_id:cc});await load();}catch(e){alert(e.message)}}
+async function del(id){if(!confirm("Hapus daftar ini?"))return;try{await api("/api/admin/groups/"+id,"DELETE");await load();}catch(e){alert(e.message)}}
+load().catch(function(e){document.querySelector("#list").textContent="Gagal memuat: "+e.message;});
 </script></html>`}
