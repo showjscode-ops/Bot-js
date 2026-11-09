@@ -296,3 +296,17 @@ BEGIN
 END; $$;
 REVOKE ALL ON FUNCTION public.claim_media_access(TEXT) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.claim_media_access(TEXT) TO service_role;
+\n
+-- Manual and paid VIP membership, with automatic expiry checks.
+create table if not exists public.vip_members (
+ telegram_id bigint primary key,
+ active boolean not null default true,
+ expires_at timestamptz,
+ note text,
+ updated_by bigint,
+ updated_at timestamptz not null default now(),
+ created_at timestamptz not null default now()
+);
+create index if not exists vip_members_active_expiry_idx on public.vip_members(active, expires_at);
+alter table public.vip_members enable row level security;
+\nalter table public.vip_packages add column if not exists duration_days integer not null default 30;

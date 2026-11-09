@@ -113,3 +113,17 @@ create table if not exists public.media_deliveries (
 );
 create index if not exists media_deliveries_due_idx on public.media_deliveries(delete_at) where deleted_at is null;
 alter table public.media_deliveries enable row level security;
+\n
+-- Manual and paid VIP membership, with automatic expiry checks.
+create table if not exists public.vip_members (
+ telegram_id bigint primary key,
+ active boolean not null default true,
+ expires_at timestamptz,
+ note text,
+ updated_by bigint,
+ updated_at timestamptz not null default now(),
+ created_at timestamptz not null default now()
+);
+create index if not exists vip_members_active_expiry_idx on public.vip_members(active, expires_at);
+alter table public.vip_members enable row level security;
+\nalter table public.vip_packages add column if not exists duration_days integer not null default 30;
