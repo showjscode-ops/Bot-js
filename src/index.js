@@ -2,6 +2,10 @@ import { handleUpdate } from "./handlers/update.js";
 import { adminApi, adminHtml } from "./features/admin.js";
 
 export default {
+  async scheduled(controller, env, ctx) {
+    const { cleanupExpiredMedia } = await import("./features/media.js");
+    ctx.waitUntil(cleanupExpiredMedia(env));
+  },
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET") {
