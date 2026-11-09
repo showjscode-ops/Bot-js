@@ -60,6 +60,11 @@ export async function settleOrder(env,orderId,data={}){
   const claimed=await db(env,`vip_orders?order_id=eq.${enc(orderId)}&status=eq.PENDING`,{method:"PATCH",headers:{"Prefer":"return=representation"},body:JSON.stringify({status:"PAID",paid_at:new Date().toISOString(),gateway_data:data})});
   if(!claimed?.length)return;
   const pkg=await one(env,`vip_packages?id=eq.${enc(order.package_id)}&select=*`);
+  if(pkg){
+    const days=Math.max(0,Number(pkg.duration_days??30));
+    const expires=days===0?null:new Date(Date.now()+days*86400000).toISOString();
+    await db(env,"vip_members?on_conflict=telegram_id",{method:"POST",headers:{"Prefer":"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({telegram_id:order.telegram_id,active:true,expires_at:expires,note:`Paket ${pkg.name}`,updated_at:new Date().toISOString()})});
+  }
   if(pkg?.invite_link)await send(env,order.telegram_id,`🎉 <b>Pembayaran berhasil!</b>\nPaket: ${clean(pkg.name)}\n\nIni link undangan VVIP kamu:\n${clean(pkg.invite_link)}\n\nSegera bergabung sebelum link kedaluwarsa.`,kb([[{text:"👑 Kembali ke VVIP",callback_data:"vip:home"}]]));
 }
 

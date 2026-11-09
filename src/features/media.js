@@ -1,4 +1,4 @@
-import { safeEqual, authorized, tg, db, send, edit, user, saveUser, isAdmin, getAdmins, groups, joinedAll, gate, packages, stateSet, stateGet, stateClear, slug, enc, one, kb, back, clean } from "../core.js";
+import { safeEqual, authorized, tg, db, send, edit, user, saveUser, isAdmin, isVip, getAdmins, groups, joinedAll, gate, packages, stateSet, stateGet, stateClear, slug, enc, one, kb, back, clean } from "../core.js";
 import { cashiCreate, sendCashiQr, checkCashi, startStars, checkOrder } from "../payments/index.js";
 
 export async function latestDraft(env,id){return one(env,`media_drafts?admin_id=eq.${id}&status=eq.DRAFT&select=*&order=created_at.desc`);}
@@ -45,7 +45,8 @@ export async function saveIncomingMedia(env,msg){
 export async function finishUpload(env,chat,id){
   const d=await latestDraft(env,id);if(!d||!d.media?.length)return send(env,chat,"Belum ada media yang diunggah.");
   await db(env,`media_drafts?id=eq.${enc(d.id)}`,{method:"PATCH",body:JSON.stringify({stage:"config"})});
-  await stateSet(env,id,"media_title");await send(env,chat,`📋 <b>Panel Tugas Upload</b>\n${d.media.length} media sudah diterima.\n\n📝 Masukkan judul untuk link media:`,kb([[{text:"❌ Batal",callback_data:"upload:cancel"}]]));
+  if(d.config?.parent_media_id){const old=await one(env,`media_links?id=eq.${enc(d.config.parent_media_id)}&select=*`);if(old){await updateDraftConfig(env,d.id,{title:old.title});return saveMediaLink(env,chat,id,d.id);}}
+  await stateSet(env,id,"media_title");await send(env,chat,`📋 <b>Panel Tugas Upload</b>\\n${d.media.length} media sudah diterima.\\n\\n📝 Masukkan judul untuk link media:`,kb([[{text:"❌ Batal",callback_data:"upload:cancel"}]]));
 }
 
 export async function cancelDraft(env,chat,id){
@@ -55,13 +56,20 @@ export async function cancelDraft(env,chat,id){
 
 export async function saveMediaLink(env,chat,id,draftId){
   const d=await one(env,`media_drafts?id=eq.${enc(draftId)}&select=*`);if(!d||d.admin_id!==id||!d.media?.length)return send(env,chat,"Draft tidak ditemukan.");
-  const c=d.config||{};if(!c.title)return send(env,chat,"Judul belum diisi.");
+  const c=d.config||{};if(!c.title&&!c.parent_media_id)return send(env,chat,"Judul belum diisi.");
   const token=crypto.randomUUID().replace(/-/g,"").slice(0,12).toUpperCase();
   const durationMinutes=c.expires_minutes?Number(c.expires_minutes):c.expires_hours?Number(c.expires_hours)*60:null;
-  await db(env,"media_links",{method:"POST",body:JSON.stringify({id:token,owner_id:id,title:c.title,media:d.media,expires_at:null,expires_minutes:durationMinutes,max_access:c.max_access||null,access_count:0,price:Number(c.price||0),required_groups:c.required_groups||[],allowed_users:c.allowed_users||[],active:true,created_at:new Date().toISOString()})});
+  const parent=c.parent_media_id||null;
+  if(parent){
+    const old=await one(env,`media_links?id=eq.${enc(parent)}&select=*`);
+    if(!old)return send(env,chat,"Media tujuan tidak ditemukan; draft tetap tersimpan.");
+    await db(env,`media_links?id=eq.${enc(parent)}`,{method:"PATCH",body:JSON.stringify({media:[...(old.media||[]),...d.media]})});
+  }else{
+    await db(env,"media_links",{method:"POST",body:JSON.stringify({id:token,owner_id:id,title:c.title,media:d.media,expires_at:null,expires_minutes:durationMinutes,max_access:c.max_access||null,access_count:0,price:Number(c.price||0),required_groups:c.required_groups||[],allowed_users:c.allowed_users||[],active:true,created_at:new Date().toISOString()})});
+  }
   await db(env,`media_drafts?id=eq.${enc(draftId)}`,{method:"DELETE"});await stateClear(env,id);
   const me=await tg(env,"getMe"),username=me.result?.username||"";
-  await send(env,chat,`✅ <b>Link media berhasil dibuat!</b>\nJudul: ${clean(c.title)}\nLink: https://t.me/${username}?start=media_${token}\n\nBagikan link tersebut kepada pengguna.`,kb([[{text:"📤 Upload media lagi",callback_data:"upload:start"}],[{text:"🏠 Panel Admin",callback_data:"adm:home"}]]));
+  await send(env,chat,parent?`✅ <b>${d.media.length} media berhasil ditambahkan ke ${clean(c.title||parent)}.</b>`:`✅ <b>Link media berhasil dibuat!</b>\\nJudul: ${clean(c.title)}\\nLink: https://t.me/${username}?start=media_${token}\\n\\nBagikan link tersebut kepada pengguna.`,kb([[{text:"📤 Upload media lagi",callback_data:"upload:start"}],[{text:"🎬 Kelola Media",callback_data:"adm:media"}],[{text:"🏠 Panel Admin",callback_data:"adm:home"}]]));
 }
 
 export async function watermarkSettings(env){
@@ -100,9 +108,10 @@ export async function accessMedia(env,chat,id,token){
   const m=await one(env,`media_links?id=eq.${enc(token)}&active=eq.true&select=*`);
   if(!m)return send(env,chat,"❌ Link media tidak ditemukan atau sudah dinonaktifkan.");
   if(m.expires_at&&Date.now()>new Date(m.expires_at).getTime())return send(env,chat,"🔥 <b>Media sudah terbakar/kedaluwarsa.</b>\nMasa berlaku link ini telah habis.");
-  if(m.max_access&&m.access_count>=m.max_access)return send(env,chat,"⚠️ <b>Media sudah dibuka oleh semua pengguna yang mendapat kuota.</b>\nBatas akses telah tercapai. Link ini tidak menerima pengguna baru lagi.");
-  if((m.allowed_users||[]).length&&!(m.allowed_users||[]).includes(Number(id)))return send(env,chat,"⛔ Akun kamu tidak termasuk anggota yang diizinkan.");
-  if((m.required_groups||[]).length){
+  const vip=await isVip(env,id);
+  if(!vip&&m.max_access&&m.access_count>=m.max_access)return send(env,chat,"⚠️ <b>Media sudah dibuka oleh semua pengguna yang mendapat kuota.</b>\nBatas akses telah tercapai. Link ini tidak menerima pengguna baru lagi.");
+  if(!vip&&(m.allowed_users||[]).length&&!(m.allowed_users||[]).includes(Number(id)))return send(env,chat,"⛔ Akun kamu tidak termasuk anggota yang diizinkan.");
+  if(!vip&&(m.required_groups||[]).length){
     for(const gid of m.required_groups){
       const g=await one(env,`force_join?id=eq.${Number(gid)}&active=eq.true&select=*`);
       if(!g)return send(env,chat,"⚠️ Channel wajib join pada link ini sudah tidak tersedia. Hubungi admin.");
@@ -112,14 +121,14 @@ export async function accessMedia(env,chat,id,token){
       if(!joined)return send(env,chat,`🔒 Kamu harus bergabung ke ${clean(g.name)} terlebih dahulu.`,kb([[{text:"Gabung",url:g.invite_link}],[{text:"✅ Saya sudah bergabung",callback_data:`media:verify:${token}`}],[{text:"⬅️ Kembali",callback_data:"feature:media"}]]));
     }
   }
-  if(Number(m.price)>0){
+  if(!vip&&Number(m.price)>0){
     const orderId=`MED-${Date.now()}-${id}`,c=await cashiCreate(env,Number(m.price),orderId);
     await db(env,"media_orders",{method:"POST",body:JSON.stringify({order_id:orderId,telegram_id:id,media_id:m.id,amount:m.price,status:"PENDING",cashi_order_id:c.orderId||orderId,checkout_url:c.checkout_url,created_at:new Date().toISOString()})});
     return sendCashiQr(env,chat,`🎬 <b>${clean(m.title)}</b>\nHarga: Rp${Number(m.price).toLocaleString("id-ID")}\nSelesaikan pembayaran untuk membuka media.`,c.qrUrl,c.checkout_url,orderId);
   }
   const burnMinutes=Number(m.expires_minutes)||null;
   if(burnMinutes)await send(env,chat,`⚠️ <b>PERINGATAN!</b>\nHarap simpan semua media yang Anda butuhkan.\nKarena semua media akan terbakar dalam ${burnMinutes} menit.`,null);
-  const claimed=await db(env,"rpc/claim_media_access",{method:"POST",body:JSON.stringify({p_media_id:token})});if(!claimed?.ok)return send(env,chat,"⚠️ Media sudah dibuka oleh semua orang yang mendapat kuota. Silakan cari link lain.");
+  if(!vip){const claimed=await db(env,"rpc/claim_media_access",{method:"POST",body:JSON.stringify({p_media_id:token})});if(!claimed?.ok)return send(env,chat,"⚠️ Media sudah dibuka oleh semua orang yang mendapat kuota. Silakan cari link lain.");}
   await send(env,chat,`✅ Akses <b>${clean(m.title)}</b> berhasil. Media akan dikirim satu per satu.`,null);await sendMediaToUser(env,chat,m.media,m.title,burnMinutes);return true;
 }
 
