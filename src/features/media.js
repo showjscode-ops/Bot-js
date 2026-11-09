@@ -64,11 +64,33 @@ export async function saveMediaLink(env,chat,id,draftId){
   await send(env,chat,`✅ <b>Link media berhasil dibuat!</b>\nJudul: ${clean(c.title)}\nLink: https://t.me/${username}?start=media_${token}\n\nBagikan link tersebut kepada pengguna.`,kb([[{text:"📤 Upload media lagi",callback_data:"upload:start"}],[{text:"🏠 Panel Admin",callback_data:"adm:home"}]]));
 }
 
-export async function sendMediaToUser(env,chat,media,caption){
-  const batches=[];for(let i=0;i<media.length;i+=10)batches.push(media.slice(i,i+10));
-  for(const batch of batches){
-    if(batch.length===1){const m=batch[0],method=m.type==="photo"?"sendPhoto":m.type==="video"?"sendVideo":m.type==="animation"?"sendAnimation":m.type==="audio"?"sendAudio":"sendDocument";await tg(env,method,{chat_id:chat,[m.type==="photo"?"photo":m.type==="video"?"video":m.type==="animation"?"animation":m.type==="audio"?"audio":"document"]:m.file_id,caption:caption||undefined});}
-    else await tg(env,"sendMediaGroup",{chat_id:chat,media:batch.map((m,i)=>({type:m.type==="animation"?"document":m.type==="audio"?"audio":m.type,media:m.file_id,...(i===0&&caption?{caption}:{})}))});
+export async function watermarkSettings(env){
+  const rows=await db(env,"bot_settings?key=in.(watermark_template,watermark_links)&select=key,value");
+  const map=Object.fromEntries((rows||[]).map(x=>[x.key,x.value]));
+  return {template:typeof map.watermark_template==="string"?map.watermark_template:"Media ke {number}\nBot: {bot}",links:Array.isArray(map.watermark_links)?map.watermark_links:[]};
+}
+export async function catalogPage(env,chat,page=0,query=""){
+  const all=await db(env,`media_links?active=eq.true&select=id,title,price&order=created_at.desc&limit=500`);
+  const filtered=(all||[]).filter(x=>!query||String(x.title||"").toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  const size=15,total=Math.max(1,Math.ceil(filtered.length/size)),p=Math.max(0,Math.min(Number(page)||0,total-1));
+  const slice=filtered.slice(p*size,(p+1)*size);
+  const rows=slice.map(x=>[{text:`${x.title.slice(0,48)}${Number(x.price)>0?` · Rp${Number(x.price).toLocaleString("id-ID")}`:""}`,callback_data:`catalog:open:${x.id}`}]);
+  rows.push([{text:"🔎 Cari berdasarkan judul",callback_data:"catalog:search"}]);
+  if(total>1)rows.push([{text:"⬅️",callback_data:`catalog:page:${p-1}:${encodeURIComponent(query)}`,...(p===0?{callback_data:"catalog:noop"}:{})},{text:`${p+1}/${total}`,callback_data:"catalog:noop"},{text:"➡️",callback_data:`catalog:page:${p+1}:${encodeURIComponent(query)}`,...(p>=total-1?{callback_data:"catalog:noop"}:{})}]);
+  rows.push(back("menu:home"));
+  return send(env,chat,`🎬 <b>Video / Media</b>\n${filtered.length} judul tersedia. Pilih judul untuk melihat detail.\nHalaman ${p+1} dari ${total}.`,kb(rows));
+}
+export async function sendMediaToUser(env,chat,media,title){
+  const settings=await watermarkSettings(env);let botName="Bot";
+  try{const me=await tg(env,"getMe",{});botName=me.result?.first_name||me.result?.username||"Bot";}catch{}
+  for(let i=0;i<media.length;i++){
+    const m=media[i],num=i+1;
+    let caption=(settings.template||"Media ke {number}\nBot: {bot}").replaceAll("{number}",String(num)).replaceAll("{bot}",clean(botName)).replaceAll("{title}",clean(title||"Media"));
+    for(const link of settings.links){if(!link?.label||!link?.url)continue;caption+=`\n<a href="${String(link.url).replace(/&/g,"&amp;").replace(/\"/g,"&quot;")}">${clean(link.label)}</a>`;}
+    const method=m.type==="photo"?"sendPhoto":m.type==="video"?"sendVideo":m.type==="animation"?"sendAnimation":m.type==="audio"?"sendAudio":"sendDocument";
+    const field=m.type==="photo"?"photo":m.type==="video"?"video":m.type==="animation"?"animation":m.type==="audio"?"audio":"document";
+    await tg(env,method,{chat_id:chat,[field]:m.file_id,caption,parse_mode:"HTML"});
+    if(i<media.length-1)await new Promise(resolve=>setTimeout(resolve,3000));
   }
 }
 
@@ -87,7 +109,7 @@ export async function accessMedia(env,chat,id,token){
     return sendCashiQr(env,chat,`🎬 <b>${clean(m.title)}</b>\nHarga: Rp${Number(m.price).toLocaleString("id-ID")}\nSelesaikan pembayaran untuk membuka media.`,c.qrUrl,c.checkout_url,orderId);
   }
   await db(env,`media_links?id=eq.${enc(token)}`,{method:"PATCH",body:JSON.stringify({access_count:Number(m.access_count||0)+1})});
-  await sendMediaToUser(env,chat,m.media,`🎬 ${m.title}`);return true;
+  await send(env,chat,`✅ Akses <b>${clean(m.title)}</b> berhasil. Media akan dikirim satu per satu.`,null);await sendMediaToUser(env,chat,m.media,m.title);return true;
 }
 
 export async function settleMediaOrder(env,orderId){
@@ -96,6 +118,6 @@ export async function settleMediaOrder(env,orderId){
   if(!claimed?.length)return;
   const m=await one(env,`media_links?id=eq.${enc(o.media_id)}&select=*`);if(!m||!m.active)return;
   await db(env,`media_links?id=eq.${enc(m.id)}`,{method:"PATCH",body:JSON.stringify({access_count:Number(m.access_count||0)+1})});
-  await sendMediaToUser(env,o.telegram_id,m.media,`🎬 ${m.title}`);
+  await send(env,o.telegram_id,`✅ Pembayaran berhasil. Media <b>${clean(m.title)}</b> sedang dikirim satu per satu.`);await sendMediaToUser(env,o.telegram_id,m.media,m.title);
 }
 
