@@ -4,7 +4,8 @@ export async function adminHome(env,chat,id){
   if(!await isAdmin(env,id))return send(env,chat,"⛔ Kamu tidak memiliki akses admin.");
   await send(env,chat,"🛠️ <b>Panel Admin Book keep</b>\nPilih pengaturan:",kb([
     [{text:"👥 Kelola Admin",callback_data:"adm:admins"},{text:"👑 Kelola VVIP",callback_data:"adm:packages"}],
-    [{text:"🔗 Grup/Channel Wajib Join",callback_data:"adm:groups"}],
+    [{text:"📢 Force Sub (wajib saat /start)",callback_data:"adm:force-sub"}],
+    [{text:"🎬 Wajib Join Media",callback_data:"adm:groups"}],
     [{text:"🎟️ Kode Diskon",callback_data:"adm:coupons"}],
     [{text:"📊 Statistik",callback_data:"adm:stats"}],
     [{text:"📤 Upload Media",callback_data:"upload:start"},{text:"🎬 Kelola Media",callback_data:"adm:media"}],
@@ -26,7 +27,11 @@ export async function adminPanel(env,chat,id,section){
   }else if(section==="groups"){
     const g=await db(env,"force_join?select=*&order=created_at.asc");
     const rows=(g||[]).map(x=>[{text:`✏️ ${x.name}`,callback_data:`adm:group-edit:${x.id}`},{text:"🗑️",callback_data:`adm:group-del:${x.id}`}]);
-    await send(env,chat,"📢 <b>Grup/Channel Wajib Join</b>",kb([[{text:"➕ Tambah Grup/Channel",callback_data:"adm:group-add"}],...rows,back("adm:home")]));
+    await send(env,chat,"🎬 <b>Grup/Channel Wajib Join Media</b>\nGrup di sini hanya diperiksa saat pengguna membuka media yang dipilih admin.",kb([[{text:"➕ Tambah Grup/Channel",callback_data:"adm:group-add"}],...rows,back("adm:home")]));
+  }else if(section==="force_sub"){
+    const g=await db(env,"force_sub_groups?select=*&order=created_at.asc");
+    const rows=(g||[]).map(x=>[{text:`${x.active?"🟢":"⚪"} ${x.name}`,callback_data:`adm:fs-edit:${x.id}`},{text:"🗑️",callback_data:`adm:fs-del:${x.id}`}]);
+    await send(env,chat,"📢 <b>Force Sub Global</b>\nGrup/channel di sini wajib diikuti saat pengguna menjalankan /start atau membuka menu bot. Ini terpisah dari wajib join media.",kb([[{text:"➕ Tambah Force Sub",callback_data:"adm:fs-add"}],...rows,back("adm:home")]));
   }else if(section==="coupons"){
     const c=await db(env,"vip_coupons?select=*&order=created_at.desc");
     const rows=(c||[]).map(x=>[{text:`${x.code} · ${x.active?"Aktif":"Nonaktif"}`,callback_data:`adm:coupon-toggle:${x.id}`}]);
