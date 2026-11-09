@@ -87,7 +87,7 @@ export async function sendMediaToUser(env,chat,media,title,deleteAfterMinutes=nu
   for(let i=0;i<media.length;i++){
     const m=media[i],num=i+1;
     let caption=(settings.template||"Media ke {number}\nBot: {bot}").replaceAll("{number}",String(num)).replaceAll("{bot}",clean(botName)).replaceAll("{title}",clean(title||"Media"));
-    for(const link of settings.links){if(!link?.label||!link?.url)continue;caption+=`\n<a href="${String(link.url).replace(/&/g,"&amp;").replace(/\"/g,"&quot;")}">${clean(link.label)}</a>`;}
+    for(const link of settings.links){if(!link?.label||!link?.url||!/^https:\/\/(t\.me|telegram\.me)\//i.test(String(link.url)))continue;caption+=`\n<a href="${String(link.url).replace(/&/g,"&amp;").replace(/\"/g,"&quot;")}">${clean(link.label)}</a>`;}
     const method=m.type==="photo"?"sendPhoto":m.type==="video"?"sendVideo":m.type==="animation"?"sendAnimation":m.type==="audio"?"sendAudio":"sendDocument";
     const field=m.type==="photo"?"photo":m.type==="video"?"video":m.type==="animation"?"animation":m.type==="audio"?"audio":"document";
     const sent=await tg(env,method,{chat_id:chat,[field]:m.file_id,caption,parse_mode:"HTML"});
@@ -103,7 +103,14 @@ export async function accessMedia(env,chat,id,token){
   if(m.max_access&&m.access_count>=m.max_access)return send(env,chat,"⚠️ <b>Media sudah dibuka oleh semua pengguna yang mendapat kuota.</b>\nBatas akses telah tercapai. Link ini tidak menerima pengguna baru lagi.");
   if((m.allowed_users||[]).length&&!(m.allowed_users||[]).includes(Number(id)))return send(env,chat,"⛔ Akun kamu tidak termasuk anggota yang diizinkan.");
   if((m.required_groups||[]).length){
-    for(const gid of m.required_groups){const g=await one(env,`force_join?id=eq.${Number(gid)}&select=*`);if(g){const r=await tg(env,"getChatMember",{chat_id:g.chat_id,user_id:id});if(!r.ok||!["member","administrator","creator"].includes(r.result?.status))return send(env,chat,`🔒 Kamu harus bergabung ke ${clean(g.name)} terlebih dahulu.`,kb([[{text:"Gabung",url:g.invite_link}],[{text:"✅ Saya sudah bergabung",callback_data:`media:verify:${token}`}]]));}}
+    for(const gid of m.required_groups){
+      const g=await one(env,`force_join?id=eq.${Number(gid)}&active=eq.true&select=*`);
+      if(!g)return send(env,chat,"⚠️ Channel wajib join pada link ini sudah tidak tersedia. Hubungi admin.");
+      let joined=false;
+      try { const r=await tg(env,"getChatMember",{chat_id:g.chat_id,user_id:id}); joined=["member","administrator","creator"].includes(r.result?.status); }
+      catch(e){ console.warn("Required group check failed",g.id,e.message); }
+      if(!joined)return send(env,chat,`🔒 Kamu harus bergabung ke ${clean(g.name)} terlebih dahulu.`,kb([[{text:"Gabung",url:g.invite_link}],[{text:"✅ Saya sudah bergabung",callback_data:`media:verify:${token}`}],[{text:"⬅️ Kembali",callback_data:"feature:media"}]]));
+    }
   }
   if(Number(m.price)>0){
     const orderId=`MED-${Date.now()}-${id}`,c=await cashiCreate(env,Number(m.price),orderId);
@@ -130,7 +137,13 @@ export async function settleMediaOrder(env,orderId){
 export async function cleanupExpiredMedia(env){
   const rows=await db(env,`media_deliveries?deleted_at=is.null&delete_at=lte.${enc(new Date().toISOString())}&select=id,chat_id,message_id&limit=100`);
   for(const row of rows||[]){
-    try{await tg(env,"deleteMessage",{chat_id:row.chat_id,message_id:row.message_id});}catch(e){console.warn("Media auto-delete failed",row.id,e.message);}
-    await db(env,`media_deliveries?id=eq.${row.id}&deleted_at=is.null`,{method:"PATCH",body:JSON.stringify({deleted_at:new Date().toISOString()})});
+    try{
+      await tg(env,"deleteMessage",{chat_id:row.chat_id,message_id:row.message_id});
+      await db(env,`media_deliveries?id=eq.${row.id}&deleted_at=is.null`,{method:"PATCH",body:JSON.stringify({deleted_at:new Date().toISOString()})});
+    }catch(e){
+      // Telegram may already have removed the message or may temporarily reject deletion.
+      // Keep the row pending so the next scheduled run can retry.
+      console.warn("Media auto-delete will retry",row.id,e.message);
+    }
   }
 }
