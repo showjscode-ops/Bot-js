@@ -23,9 +23,16 @@ export async function tg(env,method,body){
   if(!r.ok || !d.ok) { console.error("Telegram API",method,d); throw new Error(`Telegram API ${method}: ${d.description||r.statusText||"request failed"}`); }
   return d;
 }
+export function supabaseConfig(env){
+  // Support the canonical Cloudflare secret names and common legacy aliases.
+  const url=env.SUPABASE_URL||env.SUPABASE_PROJECT_URL||"";
+  const key=env.SUPABASE_SERVICE_ROLE_KEY||env.SUPABASE_SERVICE_KEY||env.SUPABASE_SECRET_KEY||"";
+  return {url:String(url).trim(),key:String(key).trim(),missing:[...(!String(url).trim()? ["SUPABASE_URL"]:[]),...(!String(key).trim()? ["SUPABASE_SERVICE_ROLE_KEY"]:[])]};
+}
 export async function db(env,path,opts={}){
-  if(!env.SUPABASE_URL||!env.SUPABASE_SERVICE_ROLE_KEY)throw new Error("Supabase configuration is incomplete");
-  const r=await fetch(`${env.SUPABASE_URL.replace(/\/$/,"")}/rest/v1/${path}`,{...opts,headers:{apikey:env.SUPABASE_SERVICE_ROLE_KEY,authorization:`Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,...H,...(opts.headers||{})}});
+  const cfg=supabaseConfig(env);
+  if(cfg.missing.length)throw new Error(`Konfigurasi Supabase belum lengkap. Tambahkan Cloudflare Worker Secrets: ${cfg.missing.join(" dan ")}. Lihat /health.`);
+  const r=await fetch(`${cfg.url.replace(/\/$/,"")}/rest/v1/${path}`,{...opts,headers:{apikey:cfg.key,authorization:`Bearer ${cfg.key}`,...H,...(opts.headers||{})}});
   if(!r.ok){const s=await r.text();console.error("Supabase",r.status,s);throw new Error(`Database error ${r.status}: ${s.slice(0,180)}`);}
   if(r.status===204||r.headers.get("content-length")==="0")return null;
   const t=await r.text();return t?JSON.parse(t):null;
@@ -47,19 +54,20 @@ export async function isAdmin(env,id){
   return !!(await one(env,`bot_admins?telegram_id=eq.${id}&select=telegram_id`));
 }
 export async function getAdmins(env){return (await db(env,"bot_admins?select=*&order=created_at.asc"))||[];}
-export async function groups(env){return (await db(env,"force_join?active=eq.true&select=*&order=created_at.asc"))||[];}
+// Global force-sub groups are separate from media-specific required-join groups.
+export async function groups(env){return (await db(env,"force_sub_groups?active=eq.true&select=*&order=created_at.asc"))||[];}
 export async function joinedAll(env,id,selectedGroups=null){
   const gs=selectedGroups || await groups(env);
-  for(const g of gs){
+  const checks=await Promise.all(gs.map(async g=>{
     try {
       const r=await tg(env,"getChatMember",{chat_id:g.chat_id,user_id:id});
-      if(!["member","administrator","creator"].includes(r.result?.status))return false;
+      return ["member","administrator","creator"].includes(r.result?.status);
     } catch(e) {
       console.warn("Force-join membership check failed",g.id,e.message);
       return false;
     }
-  }
-  return true;
+  }));
+  return checks.every(Boolean);
 }
 export async function gate(env,chat,id,lang){
   const gs=await groups(env);if(!gs.length)return true;
