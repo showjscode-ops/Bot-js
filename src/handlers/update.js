@@ -1,7 +1,7 @@
 import { OWNER_ID, safeEqual, authorized, tg, db, send, edit, user, saveUser, isAdmin, getAdmins, groups, joinedAll, gate, packages, stateSet, stateGet, stateClear, slug, enc, one, kb, back, clean } from "../core.js";
 import { showMain } from "../features/start.js";
 import { vipHome, vipList, packageDetail, about, donate, createVipOrder, settleOrder } from "../features/vip.js";
-import { latestDraft, updateDraftConfig, mediaConfig, beginUpload, extractMedia, saveIncomingMedia, finishUpload, cancelDraft, saveMediaLink, sendMediaToUser, accessMedia, settleMediaOrder } from "../features/media.js";
+import { latestDraft, updateDraftConfig, mediaConfig, beginUpload, extractMedia, saveIncomingMedia, finishUpload, cancelDraft, saveMediaLink, sendMediaToUser, accessMedia, settleMediaOrder, catalogPage } from "../features/media.js";
 import { adminHome, adminPanel, adminApi, adminHtml } from "../features/admin.js";
 import { cashiCreate, sendCashiQr, checkCashi, startStars, checkOrder } from "../payments/index.js";
 import { handleTextState } from "./states.js";
@@ -38,10 +38,14 @@ export async function handleUpdate(u,env){
   if(data==="gate:check"){if(await gate(env,chat,id,"id"))await showMain(env,chat,q.from);return;}
   if(data==="menu:home")return showMain(env,chat,q.from);
   if(data==="feature:vip")return vipHome(env,chat);
-  if(data==="feature:media")return send(env,chat,"🎬 Fitur Video/Media menggunakan link media yang dibuat admin.",kb([back("menu:home")]));
+  if(data==="feature:media")return catalogPage(env,chat,0,"");
   if(data==="feature:number")return showBuyNumber(env,chat);
    if(data==="feature:website")return showWebsite(env,chat);
    if(data.startsWith("feature:"))return send(env,chat,"Fitur ini sedang disiapkan.",kb([back("menu:home")]));
+  if(data==="catalog:noop")return;
+  if(data.startsWith("catalog:page:")){const p=data.split(":");return catalogPage(env,chat,Number(p[2]),decodeURIComponent(p.slice(3).join(":")||""));}
+  if(data==="catalog:search"){await stateSet(env,id,"media_catalog_search");return send(env,chat,"Kirim judul atau sebagian judul media yang ingin dicari. Ketik /cancel untuk batal.");}
+  if(data.startsWith("catalog:open:")){const token=data.slice("catalog:open:".length);const item=await one(env,`media_links?id=eq.${enc(token)}&active=eq.true&select=*`);if(!item)return send(env,chat,"Media tidak ditemukan atau sudah tidak aktif.",kb([back("feature:media")]));await send(env,chat,`🎬 <b>${clean(item.title)}</b>\nJumlah media: ${(item.media||[]).length}\n${Number(item.price)>0?`Harga: Rp${Number(item.price).toLocaleString("id-ID")}`:"Gratis"}\n\nMenyiapkan akses media...`);return accessMedia(env,chat,id,token);}
   if(data==="vip:home")return vipHome(env,chat);
   if(data==="vip:list")return vipList(env,chat);
   if(data==="vip:about")return about(env,chat);
@@ -62,6 +66,7 @@ export async function handleUpdate(u,env){
     if(data==="adm:groups")return adminPanel(env,chat,id,"groups");
     if(data==="adm:coupons")return adminPanel(env,chat,id,"coupons");
     if(data==="adm:stats")return adminPanel(env,chat,id,"stats");
+    if(data==="adm:watermark"){const me=await tg(env,"getMe",{});return send(env,chat,"🖼️ <b>Pengaturan Watermark</b>\nEdit template dan tautan Channel/Group melalui panel web /admin.\n\nPlaceholder: {number}, {bot}, {title}.",kb([[{text:"⚙️ Buka panel admin",url:`https://botbookkeep.showjscode.workers.dev/admin`}],back("adm:home")]));}
     if(data==="adm:admin-add"){if(id!==OWNER_ID)return send(env,chat,"Hanya owner utama yang dapat menambahkan admin.");await stateSet(env,id,"admin_add");return send(env,chat,"Kirim Telegram User ID admin baru (maksimal 3 admin tambahan).");}
     if(data.startsWith("adm:admin-del:")){if(id!==OWNER_ID)return send(env,chat,"Hanya owner yang dapat menghapus admin.");await db(env,`bot_admins?telegram_id=eq.${data.split(":")[2]}`,{method:"DELETE"});return adminPanel(env,chat,id,"admins");}
     if(data==="adm:pkg-add"){await stateSet(env,id,"pkg_add_name");return send(env,chat,"Kirim nama paket VVIP:");}

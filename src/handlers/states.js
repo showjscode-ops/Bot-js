@@ -1,6 +1,6 @@
 import { OWNER_ID, safeEqual, authorized, tg, db, send, edit, user, saveUser, isAdmin, getAdmins, groups, joinedAll, gate, packages, stateSet, stateGet, stateClear, slug, enc, one, kb, back, clean } from "../core.js";
 import { vipHome, vipList, packageDetail, about, donate, createVipOrder, settleOrder } from "../features/vip.js";
-import { latestDraft, updateDraftConfig, mediaConfig, beginUpload, extractMedia, saveIncomingMedia, finishUpload, cancelDraft, saveMediaLink, sendMediaToUser, accessMedia, settleMediaOrder } from "../features/media.js";
+import { latestDraft, updateDraftConfig, mediaConfig, beginUpload, extractMedia, saveIncomingMedia, finishUpload, cancelDraft, saveMediaLink, sendMediaToUser, accessMedia, settleMediaOrder, catalogPage } from "../features/media.js";
 
 export async function handleTextState(env,msg){
   const id=msg.from.id,st=await stateGet(env,id);if(!st)return false;
@@ -49,6 +49,7 @@ export async function handleTextState(env,msg){
     const pkgId=st.state.split(":")[1],p=await one(env,`vip_packages?id=eq.${enc(pkgId)}&select=*`);await stateClear(env,id);
     try{await createVipOrder(env,msg.chat.id,id,p,v.trim());}catch(e){await send(env,msg.chat.id,`❌ ${clean(e.message)}`);}return true;
   }
+  if(st.state==="media_catalog_search"){await stateClear(env,id);return catalogPage(env,msg.chat.id,0,v.trim());}
   if(st.state==="media_title"){
     const d=await one(env,`media_drafts?admin_id=eq.${id}&status=eq.DRAFT&select=*&order=created_at.desc`);
     if(!d)return false;const cfg={...(d.config||{}),title:v.trim()};
