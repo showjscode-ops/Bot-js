@@ -13,7 +13,10 @@ export function authorized(req,env){const h=req.headers.get("authorization")||""
 export async function tg(env,method,body){
   if(!env.BOT_TOKEN) throw new Error("BOT_TOKEN belum dikonfigurasi");
   const r=await fetch(`${TG}${env.BOT_TOKEN}/${method}`,{method:"POST",headers:H,body:JSON.stringify(body)});
-  const d=await r.json(); if(!d.ok) console.error("Telegram API",method,d); return d;
+  const raw=await r.text();
+  let d; try { d=JSON.parse(raw); } catch { throw new Error(`Telegram API ${method} returned non-JSON (${r.status}): ${raw.slice(0,160)}`); }
+  if(!r.ok || !d.ok) { console.error("Telegram API",method,d); throw new Error(`Telegram API ${method}: ${d.description||r.statusText||"request failed"}`); }
+  return d;
 }
 export async function db(env,path,opts={}){
   if(!env.SUPABASE_URL||!env.SUPABASE_SERVICE_ROLE_KEY)throw new Error("Supabase configuration is incomplete");

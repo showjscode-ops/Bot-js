@@ -4,9 +4,19 @@ import { adminApi, adminHtml } from "./features/admin.js";
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === "/health" && request.method === "GET") {
+      const checks = { botToken: !!env.BOT_TOKEN, telegramWebhookSecret: !!env.TELEGRAM_WEBHOOK_SECRET, supabaseUrl: !!env.SUPABASE_URL, supabaseServiceRoleKey: !!env.SUPABASE_SERVICE_ROLE_KEY, cashiApiKey: !!env.CASHI_API_KEY, cashiWebhookSecret: !!env.CASHI_WEBHOOK_SECRET };
+      let database = "not_configured";
+      if (checks.supabaseUrl && checks.supabaseServiceRoleKey) {
+        try { await (await import("./core.js")).db(env, "bot_users?select=telegram_id&limit=1"); database = "connected"; }
+        catch (e) { database = "error"; console.error("Health Supabase check failed:", e); }
+      }
+      const ready = checks.botToken && checks.telegramWebhookSecret && database === "connected";
+      return Response.json({ ok: ready, service: "bookkeep-vvip-media-bot", runtime: "cloudflare-workers", checks, database }, { status: ready ? 200 : 503 });
+    }
     if (url.pathname === "/webhook" && request.method === "POST") {
       if (!env.TELEGRAM_WEBHOOK_SECRET || request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.TELEGRAM_WEBHOOK_SECRET) return new Response("Unauthorized", {status:401});
-      try { await handleUpdate(await request.json(), env); return new Response("ok"); }
+      try { const update = await request.json(); await handleUpdate(update, env); return new Response("ok"); }
       catch (e) { console.error("Telegram webhook failed:", e); return new Response("error", {status:500}); }
     }
     if (url.pathname === "/cashi/webhook" && request.method === "POST") {
@@ -40,6 +50,7 @@ export default {
       if (!authorized(request,env)) return new Response("Unauthorized",{status:401});
       return adminApi(request,env,url);
     }
-    return new Response("Book keep Telegram bot is running.");
+    if (url.pathname === "/webhook" && request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } });
+    return new Response("Book keep Telegram bot is running. Check /health for deployment diagnostics.");
   }
 };
