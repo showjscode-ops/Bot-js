@@ -1,64 +1,49 @@
-# Telegram Bot — Cloudflare Workers + Supabase
+# Book keep Telegram Bot — Cloudflare Workers + Supabase
 
-Starter MVP bilingual bot (Indonesia/English), force join manager, and simple admin panel.
+## Deploy
+1. Run `supabase/schema.sql` in Supabase SQL Editor. It creates the new tables and seeds the four VVIP packages; existing `bot_users` and `force_join` are retained.
+2. Cloudflare Worker name: `botbookkeep`; entrypoint: `index.js`.
+3. Production variables/secrets:
+   - Secret `BOT_TOKEN`
+   - Secret `SUPABASE_SERVICE_ROLE_KEY`
+   - Variable `SUPABASE_URL` (real Supabase project URL)
+   - Secret `TELEGRAM_WEBHOOK_SECRET` (same as Telegram webhook secret_token)
+   - Secret `CASHI_API_KEY`
+   - Secret `CASHI_WEBHOOK_SECRET` (Cashi HMAC signing secret)
+   - Optional `ADMIN_PASSWORD` for legacy browser `/admin`.
+4. Deploy. Configure Telegram webhook with URL `https://botbookkeep.showjscode.workers.dev/webhook` and allowed updates `message`, `callback_query`, `pre_checkout_query`, `chat_member`.
+5. Configure Cashi webhook URL: `https://botbookkeep.showjscode.workers.dev/cashi/webhook`.
 
-## 1. Supabase
-1. Create a Supabase project.
-2. Open SQL Editor and run `supabase/schema.sql`.
-3. Copy Project URL and `service_role` key from Project Settings → API. Keep the service role key secret.
-
-## 2. Telegram
-1. Create bot with @BotFather and copy the bot token.
-2. Add the bot as **administrator** to every group/channel in force join. It needs permission to see membership updates.
-3. For each channel/group, obtain its numeric chat ID (usually starts with `-100`). The invite link and chat ID are both required.
-
-## 3. Cloudflare Worker
-Install Node.js, then:
-```bash
-npm install
-npx wrangler login
-npx wrangler secret put BOT_TOKEN
-npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
-npx wrangler secret put ADMIN_PASSWORD
-npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
-```
-Set `SUPABASE_URL` in `wrangler.toml`, then:
-```bash
-npm run deploy
-```
-Use the deployed Worker URL as `WORKER_URL`.
-
-## 4. Set webhook
-Set webhook with Telegram's secret-token protection. Use a random secret of 1–256 characters containing only letters, digits, `_`, or `-`, and save the same value as the Cloudflare Worker secret `TELEGRAM_WEBHOOK_SECRET`:
-
-`https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=<WORKER_URL>/webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>&allowed_updates=%5B%22message%22,%22callback_query%22,%22chat_member%22%5D`
-
-For `chat_member` updates Telegram requires the bot to be administrator in the relevant chats. Users can also press the Verify button.
-
-## 5. Admin panel
-Open `https://<worker-subdomain>.workers.dev/admin`. Browser asks for Basic Auth:
-- Username: `admin`
-- Password: value of `ADMIN_PASSWORD`
-
-Add each required group/channel with display name, invite link, and chat ID. Edit and delete are supported.
-
-## 6. GitHub automatic deployment
-Create a GitHub repository and push this project to branch `main`. In repository Settings → Secrets and variables → Actions add:
-- `CLOUDFLARE_API_TOKEN` (Workers Scripts: Edit permission)
-- `CLOUDFLARE_ACCOUNT_ID`
-
-Push to `main` to deploy. Also configure `SUPABASE_URL` in `wrangler.toml`. Add Worker secrets in Cloudflare dashboard (or deploy them once with Wrangler): `BOT_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_PASSWORD`, and `TELEGRAM_WEBHOOK_SECRET`. GitHub workflow deploys code, not secret values.
-
-In Cloudflare Workers Builds, set the project root directory to `/` (repository root). Leave the build command empty; the deploy command is `npx wrangler deploy`. The Worker entry point is the root-level `index.js` so it does not depend on the `src/` folder being included in a deployment upload.
-
-## Current scope
-- `/start` → language selection.
-- Language selection is replaced by force-join prompt.
-- Membership verification → personalized welcome and four feature buttons.
-- Force join list can be added, renamed/edited, and deleted in `/admin`.
-- Feature buttons currently show a placeholder response, ready for later modules.
+## Telegram
+- `/start`: language and main menu.
+- Group VIP: package listing, QRIS Cashi, settlement auto-send invite, About, Telegram Stars donation.
+- `/admin`: admin panel. Owner ID is fixed at `6665664367`; maximum three additional admin IDs.
+- `/upload`: upload photo/video/document/audio/animation, Finish, then configure expiry, required groups, max accesses, allowed user IDs, price and title. Save creates a Telegram deep link.
+- `/cancel`: cancel a pending text input.
+- Admin can add/edit/deactivate packages, manage admins, coupons and force-join groups.
 
 ## Important
-- This is a starter implementation. Test with a private test channel first.
-- Force join requires bot admin access in each chat and a valid numeric `chat_id`.
-- Protect `/admin` with a strong password and do not publish service-role keys or bot token.
+- Edit all four seeded invite links in `/admin` → Kelola VVIP before selling. They are placeholder URLs.
+- Cashi webhook verifies `x-gateway-signature` as HMAC-SHA256 over raw request body. Confirm this exact signature convention with Cashi merchant dashboard/docs before going live.
+- The bot must be admin in each required group/channel to verify membership.
+- Telegram Stars invoices use currency `XTR`.
+- Draft cancellation deletes the draft record. Telegram does not expose a delete-file method for file IDs already uploaded to Telegram.
+- Never expose bot token, Supabase service role key, Cashi API key or webhook secret.
+
+
+## Modular source layout (refactored)
+The runtime entrypoint is `src/index.js`. Feature logic is separated into:
+- `src/features/start.js` — start menu and main navigation.
+- `src/features/media.js` — media upload, link configuration, access checks and media delivery.
+- `src/features/vip.js` — VIP packages, coupons, VIP order creation and VIP fulfillment.
+- `src/features/admin.js` — Telegram admin menus and web admin API/page.
+- `src/payments/index.js` — shared Cashi QR/order creation and payment status checks; order fulfillment is routed by order prefix (`VIP-` / `MED-`).
+- `src/handlers/states.js` — text-input state machine used by the current admin flows.
+- `src/handlers/update.js` — Telegram update router.
+- `src/core.js` — shared Telegram, Supabase, authorization and state utilities.
+
+### Notes before deployment
+- The existing database schema is retained; this refactor does not require a SQL migration.
+- `feature:number` and `feature:website` remain "under preparation" placeholders because the uploaded source ZIP did not contain number-selling or website-selling workflows, tables, API contracts, or provider credentials. Their modules should be implemented once those requirements are supplied; they are not silently simulated.
+- `ads/` is reserved for a dedicated ad module. No working ad provider or ad placement integration existed in the uploaded ZIP, so no fictitious ad behavior has been added.
+- `handleTextState` remains a dispatcher for the existing shared `bot_states` table. Feature-specific states can be extracted further as the number/website/ads flows are implemented.
