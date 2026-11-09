@@ -38,6 +38,10 @@ export async function user(env,id){return one(env,`bot_users?telegram_id=eq.${id
 export async function saveUser(env,u,language){
   await db(env,"bot_users?on_conflict=telegram_id",{method:"POST",headers:{"Prefer":"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({telegram_id:u.id,first_name:u.first_name||"",username:u.username||"",...(language?{language}:{}),updated_at:new Date().toISOString()})});
 }
+export async function isVip(env,id){
+  const row=await one(env,`vip_members?telegram_id=eq.${id}&active=eq.true&select=expires_at`);
+  return !!row && (!row.expires_at || new Date(row.expires_at).getTime()>Date.now());
+}
 export async function isAdmin(env,id){
   if(Number(id)===OWNER_ID)return true;
   return !!(await one(env,`bot_admins?telegram_id=eq.${id}&select=telegram_id`));
