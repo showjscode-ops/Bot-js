@@ -9,7 +9,7 @@ import { showBuyNumber } from "../features/buy-number.js";
 import { showWebsite } from "../features/website.js";
 import { tr, user as getUser } from "../core.js";
 
-export async function handleUpdate(u,env){
+export async function handleUpdate(u,env,ctx){
   if(u.pre_checkout_query){await tg(env,"answerPreCheckoutQuery",{pre_checkout_query_id:u.pre_checkout_query.id,ok:true});return;}
   if(u.message?.successful_payment){
     const p=u.message.successful_payment;await db(env,"bot_donations",{method:"POST",body:JSON.stringify({telegram_id:u.message.from.id,stars:p.total_amount,currency:p.currency,payload:p.invoice_payload,telegram_charge_id:p.telegram_payment_charge_id,created_at:new Date().toISOString()})});
@@ -21,8 +21,18 @@ export async function handleUpdate(u,env){
     if(text.startsWith("/start")){
       await saveUser(env,msg.from);
       const payload=text.split(/\s+/)[1]||"";
-      if(payload.startsWith("media_")){return accessMedia(env,chat,id,payload.slice(6));}
-      const old=await user(env,id);if(!old?.language){await send(env,chat,"🌐 <b>Pilih bahasa / Choose your language</b>",kb([[{text:"🇮🇩 Bahasa Indonesia",callback_data:"lang:id"}],[{text:"🇬🇧 English",callback_data:"lang:en"}]]));return;}
+      const old=await user(env,id);
+      if(payload.startsWith("media_")){
+        if(Number(id)!==OWNER_ID && !await isAdmin(env,id)){
+          if(!await gate(env,chat,id,old?.language||"id")){await stateSet(env,id,`pending_media:${payload.slice(6)}`);return;}
+        }
+        return accessMedia(env,chat,id,payload.slice(6));
+      }
+      if(!old?.language){await send(env,chat,"🌐 <b>Pilih bahasa / Choose your language</b>",kb([[{text:"🇮🇩 Bahasa Indonesia",callback_data:"lang:id"}],[{text:"🇬🇧 English",callback_data:"lang:en"}]]));return;}
+      if(Number(id)!==OWNER_ID && !await isAdmin(env,id)){
+        const lang=old.language||"id";
+        if(!await gate(env,chat,id,lang))return;
+      }
       await showMain(env,chat,msg.from);return;
     }
     if(text==="/setlanguage"){return send(env,chat,tr((await getUser(env,id))?.language||"id","language"),kb([[{text:"🇮🇩 Bahasa Indonesia",callback_data:"lang:id"}],[{text:"🇬🇧 English",callback_data:"lang:en"}],[{text:"⬅️ Kembali",callback_data:"menu:home"}]]));}
@@ -34,20 +44,28 @@ export async function handleUpdate(u,env){
       return;
     }
     if(await isAdmin(env,id)&&await saveIncomingMedia(env,msg))return;
-    if(await handleTextState(env,msg))return;
+    if(await handleTextState(env,msg,ctx))return;
     if(text==="/help")return send(env,chat,tr((await getUser(env,id))?.language||"id","help"),kb([[{text:"🌐 Ganti Bahasa / Change Language",callback_data:"menu:language"}],[{text:"❤️‍🔥 Donasi / Donate",callback_data:"vip:donate"}],[{text:"⬅️ Kembali",callback_data:"menu:home"}]]));
   }
   const q=u.callback_query;if(!q)return;
   const data=q.data||"",id=q.from.id,chat=q.message?.chat?.id||id;
-  await tg(env,"answerCallbackQuery",{callback_query_id:q.id,text:"Memproses…",show_alert:false});
-  if(data!=="catalog:noop"&&q.message?.message_id){
-    try{await tg(env,"editMessageText",{chat_id:chat,message_id:q.message.message_id,text:"⏳ <b>Sedang memproses permintaan...</b>",parse_mode:"HTML"});}catch(e){console.warn("Loading state skipped:",e.message);}
-  }
-  if(data.startsWith("lang:")){const lang=data.endsWith("en")?"en":"id";await saveUser(env,q.from,lang);await send(env,chat,tr(lang,"changed"));await showMain(env,chat,q.from);return;}
+  if(data.startsWith("lang:")){const lang=data.endsWith("en")?"en":"id";await saveUser(env,q.from,lang);await send(env,chat,tr(lang,"changed"));if(Number(id)!==OWNER_ID&&!await isAdmin(env,id)&&!await gate(env,chat,id,lang))return;await showMain(env,chat,q.from);return;}
   if(data==="gate:check"){
     const lang=(await getUser(env,id))?.language||"id";
-    if(await gate(env,chat,id,lang))return showMain(env,chat,q.from);
+    if(await gate(env,chat,id,lang)){
+      const pending=await stateGet(env,id);
+      if(pending?.state?.startsWith("pending_media:")){
+        const token=pending.state.slice("pending_media:".length);
+        await stateClear(env,id);
+        return accessMedia(env,chat,id,token);
+      }
+      return showMain(env,chat,q.from);
+    }
     return;
+  }
+  if(!data.startsWith("adm:") && Number(id)!==OWNER_ID && !await isAdmin(env,id)){
+    const lang=(await getUser(env,id))?.language||"id";
+    if(!await gate(env,chat,id,lang))return;
   }
   if(data==="menu:home")return showMain(env,chat,q.from);
   if(data==="menu:help"){const u=await getUser(env,id);return send(env,chat,tr(u?.language||"id","help"),kb([[{text:"🌐 Ganti Bahasa / Change Language",callback_data:"menu:language"}],[{text:"❤️‍🔥 Donasi / Donate",callback_data:"vip:donate"}],[{text:"⬅️ Kembali",callback_data:"menu:home"}]]));}

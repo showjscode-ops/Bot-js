@@ -19,18 +19,39 @@ export async function handleTextState(env,msg,ctx){
   }
   if(st.state==="broadcast_message"){
     if(!await isAdmin(env,id))return true;
-    const targets=await db(env,"bot_users?select=telegram_id&limit=5000");
-    const gs=await db(env,"force_join?select=chat_id,name");
+    // PostgREST commonly caps a response at 1,000 rows; page through users instead
+    // of silently broadcasting only to the first page.
+    const targets=[];
+    for(let offset=0;offset<50000;offset+=1000){
+      const page=await db(env,`bot_users?select=telegram_id&order=telegram_id.asc&limit=1000&offset=${offset}`);
+      targets.push(...(page||[]));
+      if(!page||page.length<1000)break;
+    }
+    const gs=await db(env,"force_join?active=eq.true&select=chat_id,name");
     await stateSet(env,id,"broadcast_processing");
-    await send(env,msg.chat.id,`⏳ Broadcast dimulai ke ${(targets||[]).length} pengguna dan ${(gs||[]).length} grup/channel. Hasil akan dikirim setelah proses selesai.`);
-    const work=async()=>{let ok=0,fail=0;for(const x of targets||[]){try{await tg(env,"copyMessage",{chat_id:x.telegram_id,from_chat_id:msg.chat.id,message_id:msg.message_id});ok++;}catch{fail++;}await new Promise(r=>setTimeout(r,40));}for(const g of gs||[]){try{await tg(env,"copyMessage",{chat_id:g.chat_id,from_chat_id:msg.chat.id,message_id:msg.message_id});ok++;}catch{fail++;}}await stateClear(env,id);await send(env,msg.chat.id,`📢 Broadcast selesai.\\nBerhasil: ${ok}\\nGagal: ${fail}`,kb([back("adm:home")]));};
+    await send(env,msg.chat.id,`⏳ Broadcast dimulai ke ${targets.length} pengguna dan ${(gs||[]).length} grup/channel. Hasil akan dikirim setelah proses selesai.`);
+    const work=async()=>{
+      let ok=0,fail=0;
+      const destinations=[...targets.map(x=>x.telegram_id),...(gs||[]).map(g=>g.chat_id)];
+      for(let offset=0;offset<destinations.length;offset+=15){
+        const batch=destinations.slice(offset,offset+15);
+        const results=await Promise.all(batch.map(async target=>{
+          try{await tg(env,"copyMessage",{chat_id:target,from_chat_id:msg.chat.id,message_id:msg.message_id});return true;}
+          catch(e){console.warn("Broadcast delivery failed:",target,e.message);return false;}
+        }));
+        ok+=results.filter(Boolean).length;fail+=results.length-results.filter(Boolean).length;
+        await new Promise(r=>setTimeout(r,1000));
+      }
+      await stateClear(env,id);
+      await send(env,msg.chat.id,`📢 Broadcast selesai.\nBerhasil: ${ok}\nGagal: ${fail}`,kb([back("adm:home")]));
+    };
     const task=work().catch(async e=>{await stateClear(env,id);console.error("Broadcast failed",e);await send(env,msg.chat.id,`❌ Broadcast gagal: ${clean(e.message)}`);});
     if(ctx?.waitUntil)ctx.waitUntil(task);else await task;return true;
   }
   if(st.state==="vip_user_search"){
     const uid=v.trim();if(!/^\d+$/.test(uid))return send(env,msg.chat.id,"Masukkan Telegram User ID berupa angka.");
     await stateClear(env,id);const m=await one(env,`vip_members?telegram_id=eq.${uid}&select=*`);
-    return send(env,msg.chat.id,`👤 User <code>${uid}</code>\\nStatus: ${m?.active&&(!m.expires_at||new Date(m.expires_at)>new Date())?"VIP":"FREE"}\\nBerakhir: ${m?.expires_at||"—"}`,kb([[{text:"👑 Upgrade VIP",callback_data:`adm:user-vip:${uid}`}],[{text:"🆓 Jadikan FREE",callback_data:`adm:user-free:${uid}`}],back("adm:users")]));
+    return send(env,msg.chat.id,`👤 User <code>${uid}</code>\nStatus: ${m?.active&&(!m.expires_at||new Date(m.expires_at)>new Date())?"VIP":"FREE"}\nBerakhir: ${m?.expires_at||"—"}`,kb([[{text:"👑 Upgrade VIP",callback_data:`adm:user-vip:${uid}`}],[{text:"🆓 Jadikan FREE",callback_data:`adm:user-free:${uid}`}],back("adm:users")]));
   }
   if(st.state.startsWith("vip_set_days:")){
     const uid=st.state.split(":")[1],days=Number(v.trim());
