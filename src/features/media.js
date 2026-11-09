@@ -46,7 +46,7 @@ export async function finishUpload(env,chat,id){
   const d=await latestDraft(env,id);if(!d||!d.media?.length)return send(env,chat,"Belum ada media yang diunggah.");
   await db(env,`media_drafts?id=eq.${enc(d.id)}`,{method:"PATCH",body:JSON.stringify({stage:"config"})});
   if(d.config?.parent_media_id){const old=await one(env,`media_links?id=eq.${enc(d.config.parent_media_id)}&select=*`);if(old){await updateDraftConfig(env,d.id,{title:old.title});return saveMediaLink(env,chat,id,d.id);}}
-  await stateSet(env,id,"media_title");await send(env,chat,`📋 <b>Panel Tugas Upload</b>\\n${d.media.length} media sudah diterima.\\n\\n📝 Masukkan judul untuk link media:`,kb([[{text:"❌ Batal",callback_data:"upload:cancel"}]]));
+  await stateSet(env,id,"media_title");await send(env,chat,`📋 <b>Panel Tugas Upload</b>\n${d.media.length} media sudah diterima.\n\n📝 Masukkan judul untuk link media:`,kb([[{text:"❌ Batal",callback_data:"upload:cancel"}]]));
 }
 
 export async function cancelDraft(env,chat,id){
@@ -69,7 +69,7 @@ export async function saveMediaLink(env,chat,id,draftId){
   }
   await db(env,`media_drafts?id=eq.${enc(draftId)}`,{method:"DELETE"});await stateClear(env,id);
   const me=await tg(env,"getMe"),username=me.result?.username||"";
-  await send(env,chat,parent?`✅ <b>${d.media.length} media berhasil ditambahkan ke ${clean(c.title||parent)}.</b>`:`✅ <b>Link media berhasil dibuat!</b>\\nJudul: ${clean(c.title)}\\nLink: https://t.me/${username}?start=media_${token}\\n\\nBagikan link tersebut kepada pengguna.`,kb([[{text:"📤 Upload media lagi",callback_data:"upload:start"}],[{text:"🎬 Kelola Media",callback_data:"adm:media"}],[{text:"🏠 Panel Admin",callback_data:"adm:home"}]]));
+  await send(env,chat,parent?`✅ <b>${d.media.length} media berhasil ditambahkan ke ${clean(c.title||parent)}.</b>`:`✅ <b>Link media berhasil dibuat!</b>\nJudul: ${clean(c.title)}\\nLink: https://t.me/${username}?start=media_${token}\n\nBagikan link tersebut kepada pengguna.`,kb([[{text:"📤 Upload media lagi",callback_data:"upload:start"}],[{text:"🎬 Kelola Media",callback_data:"adm:media"}],[{text:"🏠 Panel Admin",callback_data:"adm:home"}]]));
 }
 
 export async function watermarkSettings(env){
