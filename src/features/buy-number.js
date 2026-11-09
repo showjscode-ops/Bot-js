@@ -1,7 +1,5 @@
-// Dedicated Buy Number feature module.
-// The uploaded project contains only a menu placeholder; implement provider/API
-// workflows here when the number provider contract and credentials are supplied.
-export async function showBuyNumber(env, chat) {
-  const { send, kb, back } = await import("../core.js");
-  return send(env, chat, "📱 Fitur Beli Nomor sedang disiapkan.", kb([back("menu:home")]));
+import { send, kb, back, user, tr } from "../core.js";
+export async function showBuyNumber(env,chat,id){
+ const u=await user(env,id),lang=u?.language||"id";
+ return send(env,chat,tr(lang,"numberMsg"),kb([[{text:"👤 Admin Nokos @nokossupport",url:"https://t.me/nokossupport"}],back("menu:home")]));
 }

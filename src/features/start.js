@@ -1,7 +1,9 @@
-import { safeEqual, authorized, tg, db, send, edit, user, saveUser, isAdmin, getAdmins, groups, joinedAll, gate, packages, stateSet, stateGet, stateClear, slug, enc, one, kb, back, clean } from "../core.js";
-
+import { send, user, tr, kb } from "../core.js";
 export async function showMain(env,chat,u){
-  const n=clean(u.first_name||"teman");
-  await send(env,chat,`🎉 <b>Selamat datang, ${n}!</b>\n\nSilakan pilih layanan yang tersedia.`,kb([[{text:"🎬 Video/Media",callback_data:"feature:media"},{text:"👑 Group VIP",callback_data:"feature:vip"}],[{text:"📱 Beli Nomor",callback_data:"feature:number"},{text:"🌐 Website",callback_data:"feature:website"}]]));
+ const saved=await user(env,u.id),lang=saved?.language||"id";
+ await send(env,chat,tr(lang,"welcome",{name:(u.first_name||"friend").replace(/[<>&]/g,"")}),kb([
+ [{text:tr(lang,"media"),callback_data:"feature:media"},{text:tr(lang,"vip"),callback_data:"feature:vip"}],
+ [{text:tr(lang,"number"),callback_data:"feature:number"},{text:tr(lang,"website"),callback_data:"feature:website"}],
+ [{text:tr(lang,"helpBtn"),callback_data:"menu:help"},{text:tr(lang,"donate"),callback_data:"vip:donate"}]
+ ]));
 }
-
