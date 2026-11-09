@@ -1,4 +1,4 @@
-import { safeEqual, authorized, tg, db, send, edit, user, saveUser, isAdmin, getAdmins, groups, joinedAll, gate, packages, stateSet, stateGet, stateClear, slug, enc, one, kb, back, clean } from "../core.js";
+import { OWNER_ID, safeEqual, authorized, tg, db, send, edit, user, saveUser, isAdmin, getAdmins, groups, joinedAll, gate, packages, stateSet, stateGet, stateClear, slug, enc, one, kb, back, clean } from "../core.js";
 import { vipHome, vipList, packageDetail, about, donate, createVipOrder, settleOrder } from "../features/vip.js";
 import { latestDraft, updateDraftConfig, mediaConfig, beginUpload, extractMedia, saveIncomingMedia, finishUpload, cancelDraft, saveMediaLink, sendMediaToUser, accessMedia, settleMediaOrder } from "../features/media.js";
 
