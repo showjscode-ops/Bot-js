@@ -34,11 +34,11 @@ export async function handleTextState(env,msg){
     else{row.id=slug(p[1]);await db(env,"vip_packages",{method:"POST",body:JSON.stringify(row)});}
     await stateClear(env,id);await send(env,msg.chat.id,"✅ Paket berhasil disimpan.");return true;
   }
-  if(st.state==="group_add_name"){await stateSet(env,id,"group_add_link|"+v.trim());await send(env,msg.chat.id,"Kirim link undangan Telegram:");return true;}
-  if(st.state.startsWith("group_add_link|")){await stateSet(env,id,"group_add_chat|"+st.state.split("|")[1]+"|"+v.trim());await send(env,msg.chat.id,"Kirim Chat ID numerik (contoh -100123...):");return true;}
-  if(st.state.startsWith("group_add_chat|")){
-    const p=st.state.split("|");if(!/^-?\d+$/.test(v.trim()))return send(env,msg.chat.id,"Chat ID tidak valid.");
-    await db(env,"force_join",{method:"POST",body:JSON.stringify({name:p[1],invite_link:p[2],chat_id:v.trim(),active:true})});await stateClear(env,id);await send(env,msg.chat.id,"✅ Grup/channel wajib join ditambahkan.");return true;
+  if(st.state==="group_add_name"||st.state.startsWith("group_add_name_media:")){const mediaDraft=st.state.startsWith("group_add_name_media:")?st.state.split(":")[1]:null;await stateSet(env,id,`${mediaDraft?"group_add_link_media:"+mediaDraft+"|":"group_add_link|"}`+v.trim());await send(env,msg.chat.id,"Kirim link undangan Telegram:",kb([back(mediaDraft?`med:groups:${mediaDraft}`:"adm:groups"),[{text:"❌ Batal",callback_data:mediaDraft?`med:groups:${mediaDraft}`:"adm:groups"}]]));return true;}
+  if(st.state.startsWith("group_add_link|")||st.state.startsWith("group_add_link_media:")){const media=st.state.startsWith("group_add_link_media:");const rest=st.state.slice(media?"group_add_link_media:".length:"group_add_link|".length).split("|");await stateSet(env,id,media?`group_add_chat_media:${rest[0]}|${rest[1]}|${v.trim()}`:"group_add_chat|"+rest[0]+"|"+v.trim());await send(env,msg.chat.id,"Kirim Chat ID numerik (contoh -100123...). Pastikan bot sudah menjadi admin channel/grup.",kb([back(media?`med:groups:${rest[0]}`:"adm:groups"),[{text:"❌ Batal",callback_data:media?`med:groups:${rest[0]}`:"adm:groups"}]]));return true;}
+  if(st.state.startsWith("group_add_chat|")||st.state.startsWith("group_add_chat_media:")){
+    const media=st.state.startsWith("group_add_chat_media:"),rest=st.state.slice(media?"group_add_chat_media:".length:"group_add_chat|".length).split("|"),draftId=media?rest.shift():null;const [name,link]=rest;if(!/^-?\d+$/.test(v.trim()))return send(env,msg.chat.id,"Chat ID tidak valid.");
+    const created=await db(env,"force_join",{method:"POST",headers:{"Prefer":"return=representation"},body:JSON.stringify({name,invite_link:link,chat_id:v.trim(),active:true})});await stateClear(env,id);await send(env,msg.chat.id,"✅ Grup/channel wajib join berhasil ditambahkan!",kb([[{text:"📢 Pilih channel ini",callback_data:media?`med:group-toggle:${draftId}:${created?.[0]?.id}`:"adm:groups"}],[{text:"⬅️ Kembali",callback_data:media?`med:groups:${draftId}`:"adm:groups"}],[{text:"❌ Batal",callback_data:"adm:home"}]]));return true;
   }
   if(st.state==="coupon_add_code"){await stateSet(env,id,"coupon_add_value|"+v.trim().toUpperCase());await send(env,msg.chat.id,"Kirim nilai diskon (angka; persen misalnya 20):");return true;}
   if(st.state.startsWith("coupon_add_value|")){
@@ -57,8 +57,8 @@ export async function handleTextState(env,msg){
     await stateClear(env,id);return mediaConfig(env,msg.chat.id,d.id);
   }
   if(st.state.startsWith("media_custom_expiry:")){
-    const hours=Number(v),draftId=st.state.split(":")[1];if(!Number.isFinite(hours)||hours<=0||hours>8760)return send(env,msg.chat.id,"Masukkan jumlah jam 1 sampai 8760.");
-    await updateDraftConfig(env,draftId,{expires_hours:hours});await stateClear(env,id);return mediaConfig(env,msg.chat.id,draftId);
+    const minutes=Number(v),draftId=st.state.split(":")[1];if(!Number.isInteger(minutes)||minutes<=0||minutes>525600)return send(env,msg.chat.id,"Masukkan durasi dalam menit (1 sampai 525600).",kb([[{text:"❌ Batal",callback_data:`med:cancel:${draftId}`}]]));
+    await updateDraftConfig(env,draftId,{expires_minutes:minutes,expires_hours:null});await stateClear(env,id);return mediaConfig(env,msg.chat.id,draftId);
   }
   if(st.state==="media_price"){
     const n=Number(v);if(!Number.isInteger(n)||n<0)return send(env,msg.chat.id,"Harga harus angka Rupiah, 0 untuk gratis.");
