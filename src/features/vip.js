@@ -11,7 +11,7 @@ export async function vipHome(env,chat){
 }
 
 export async function vipList(env,chat){
-  const ps=await packages();
+  const ps=await packages(env);
   const rows=ps.map(p=>[{text:p.name,callback_data:`vip:pkg:${p.id}`}]);
   rows.push(back("vip:home"));
   await send(env,chat,`📚 <b>Daftar VVIP Group</b>\n\n<b>Bot:</b> Book keep\n<b>Keterangan:</b> Daftar paket eksklusif. Klik paket untuk detail lengkap dan penawaran spesial.`,kb(rows));
