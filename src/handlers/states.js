@@ -10,6 +10,16 @@ export async function handleTextState(env,msg,ctx){
     const pid=st.state.split(":")[1],days=Number(v.trim());if(!Number.isInteger(days)||days<0||days>36500)return send(env,msg.chat.id,"Durasi harus 0 sampai 36500 hari (0 = permanen).");
     await db(env,`vip_packages?id=eq.${enc(pid)}`,{method:"PATCH",body:JSON.stringify({duration_days:days})});await stateClear(env,id);return send(env,msg.chat.id,"✅ Durasi paket diperbarui.",kb([back("adm:packages")]));
   }
+  if(st.state.startsWith("fs_edit_")){
+    const p=st.state.split(":"),field=p[0].slice("fs_edit_".length),gid=p[1];let patch={};
+    if(field==="name"){if(!v.trim())return send(env,msg.chat.id,"Nama tidak boleh kosong.");patch.name=v.trim();}
+    if(field==="link"){if(!/^https:\/\/(t\.me|telegram\.me)\//i.test(v.trim()))return send(env,msg.chat.id,"Link harus https://t.me/...");patch.invite_link=v.trim();}
+    if(field==="chat"){if(!/^-?\d+$/.test(v.trim()))return send(env,msg.chat.id,"Chat ID tidak valid.");patch.chat_id=v.trim();}
+    await db(env,`force_sub_groups?id=eq.${Number(gid)}`,{method:"PATCH",body:JSON.stringify(patch)});await stateClear(env,id);return send(env,msg.chat.id,"✅ Force Sub berhasil diperbarui.",kb([back(`adm:fs-edit:${gid}`)]));
+  }
+  if(st.state==="fs_add_name"){await stateSet(env,id,"fs_add_link|"+v.trim());return send(env,msg.chat.id,"Kirim link undangan Telegram (https://t.me/...):",kb([back("adm:force-sub"),[{text:"❌ Batal",callback_data:"adm:force-sub"}]]));}
+  if(st.state.startsWith("fs_add_link|")){if(!/^https:\/\/(t\.me|telegram\.me)\//i.test(v.trim()))return send(env,msg.chat.id,"Link harus https://t.me/...");const name=st.state.slice("fs_add_link|".length);await stateSet(env,id,`fs_add_chat|${name}|${v.trim()}`);return send(env,msg.chat.id,"Kirim Chat ID numerik (contoh -100123...). Pastikan bot menjadi admin grup/channel.",kb([back("adm:force-sub"),[{text:"❌ Batal",callback_data:"adm:force-sub"}]]));}
+  if(st.state.startsWith("fs_add_chat|")){if(!/^-?\d+$/.test(v.trim()))return send(env,msg.chat.id,"Chat ID tidak valid.");const p=st.state.split("|");await db(env,"force_sub_groups",{method:"POST",body:JSON.stringify({name:p[1],invite_link:p[2],chat_id:v.trim(),active:true})});await stateClear(env,id);return send(env,msg.chat.id,"✅ Grup/channel berhasil ditambahkan ke Force Sub.",kb([back("adm:force-sub")]));}
   if(st.state.startsWith("group_edit_")){
     const p=st.state.split(":"),field=p[0].slice("group_edit_".length),gid=p[1];let patch={};
     if(field==="name"){if(!v.trim())return send(env,msg.chat.id,"Nama tidak boleh kosong.");patch.name=v.trim();}
@@ -27,7 +37,11 @@ export async function handleTextState(env,msg,ctx){
       targets.push(...(page||[]));
       if(!page||page.length<1000)break;
     }
-    const gs=await db(env,"force_join?active=eq.true&select=chat_id,name");
+    const [mediaGroups,forceSubGroups]=await Promise.all([
+      db(env,"force_join?active=eq.true&select=chat_id,name"),
+      db(env,"force_sub_groups?active=eq.true&select=chat_id,name")
+    ]);
+    const gs=[...(mediaGroups||[]),...(forceSubGroups||[])].filter((g,i,a)=>a.findIndex(x=>String(x.chat_id)===String(g.chat_id))===i);
     await stateSet(env,id,"broadcast_processing");
     await send(env,msg.chat.id,`⏳ Broadcast dimulai ke ${targets.length} pengguna dan ${(gs||[]).length} grup/channel. Hasil akan dikirim setelah proses selesai.`);
     const work=async()=>{

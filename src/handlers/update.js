@@ -97,6 +97,12 @@ export async function handleUpdate(u,env,ctx){
     if(data==="adm:admins")return adminPanel(env,chat,id,"admins");
     if(data==="adm:packages")return adminPanel(env,chat,id,"packages");
     if(data==="adm:groups"){await stateClear(env,id);return adminPanel(env,chat,id,"groups");}
+    if(data==="adm:force-sub"){await stateClear(env,id);return adminPanel(env,chat,id,"force_sub");}
+    if(data==="adm:fs-add"){await stateSet(env,id,"fs_add_name");return send(env,chat,"Kirim nama grup/channel Force Sub:",kb([back("adm:force-sub"),[{text:"❌ Batal",callback_data:"adm:force-sub"}]]));}
+    if(data.startsWith("adm:fs-edit:")){const gid=data.split(":")[2],g=await one(env,`force_sub_groups?id=eq.${Number(gid)}&select=*`);if(!g)return send(env,chat,"Force Sub tidak ditemukan.",kb([back("adm:force-sub")]));return send(env,chat,`📢 <b>${clean(g.name)}</b>\\nStatus: ${g.active?"Aktif":"Nonaktif"}`,kb([[{text:"✏️ Ubah nama",callback_data:`adm:fs-field:name:${gid}`}],[{text:"🔗 Ubah link",callback_data:`adm:fs-field:link:${gid}`}],[{text:"🆔 Ubah Chat ID",callback_data:`adm:fs-field:chat:${gid}`}],[{text:g.active?"⏸ Nonaktifkan":"▶️ Aktifkan",callback_data:`adm:fs-toggle:${gid}`}],back("adm:force-sub")]));}
+    if(data.startsWith("adm:fs-field:")){const a=data.split(":"),field=a[2],gid=a[3];await stateSet(env,id,`fs_edit_${field}:${gid}`);return send(env,chat,field==="name"?"Kirim nama baru:":field==="link"?"Kirim link undangan https://t.me/...":"Kirim Chat ID numerik:",kb([back(`adm:fs-edit:${gid}`)]));}
+    if(data.startsWith("adm:fs-toggle:")){const gid=data.split(":")[2],g=await one(env,`force_sub_groups?id=eq.${Number(gid)}&select=active`);if(g)await db(env,`force_sub_groups?id=eq.${Number(gid)}`,{method:"PATCH",body:JSON.stringify({active:!g.active})});return adminPanel(env,chat,id,"force_sub");}
+    if(data.startsWith("adm:fs-del:")){await db(env,`force_sub_groups?id=eq.${Number(data.split(":")[2])}`,{method:"DELETE"});return adminPanel(env,chat,id,"force_sub");}
     if(data==="adm:coupons")return adminPanel(env,chat,id,"coupons");
     if(data==="adm:stats")return adminPanel(env,chat,id,"stats");
     if(data==="adm:watermark"){return send(env,chat,"🖼️ <b>Pengaturan Watermark</b>\nEdit template dan tautan Channel/Group melalui panel web /admin.\n\nPlaceholder: {number}, {bot}, {title}.",kb([[{text:"⚙️ Buka panel admin",url:"https://botbookkeep.showjscode.workers.dev/admin"}],back("adm:home")]));}
