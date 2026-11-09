@@ -59,3 +59,14 @@ insert into public.vip_packages(id,name,description,price,invite_link,sort_order
 ('vip-indo-local','VIP Indo Local','Akses khusus media Indo Local setelah pembayaran berhasil.',50000,'https://t.me/CHANGE_ME',3),
 ('vip-vgk','VIP VGK','Akses khusus media Video Gays setelah pembayaran berhasil.',50000,'https://t.me/CHANGE_ME',4)
 on conflict(id) do nothing;
+
+
+-- Catalog, clean-chat and editable media watermark settings
+create table if not exists public.bot_settings (
+  key text primary key, value jsonb not null default '{}'::jsonb, updated_at timestamptz not null default now()
+);
+insert into public.bot_settings(key,value) values
+ ('watermark_template', to_jsonb(E'Media ke {number}\nBot: {bot}')),
+ ('watermark_links', '[{"label":"Channel","url":"https://t.me/+NrHk5eHAiTFiNzc1"},{"label":"Group","url":"https://t.me/Jsshowfile"}]'::jsonb)
+on conflict(key) do nothing;
+alter table public.bot_settings enable row level security;
