@@ -39,7 +39,10 @@ export async function handleUpdate(u,env){
   }
   const q=u.callback_query;if(!q)return;
   const data=q.data||"",id=q.from.id,chat=q.message?.chat?.id||id;
-  await tg(env,"answerCallbackQuery",{callback_query_id:q.id});
+  await tg(env,"answerCallbackQuery",{callback_query_id:q.id,text:"Memproses…",show_alert:false});
+  if(data!=="catalog:noop"&&q.message?.message_id){
+    try{await tg(env,"editMessageText",{chat_id:chat,message_id:q.message.message_id,text:"⏳ <b>Sedang memproses permintaan...</b>",parse_mode:"HTML"});}catch(e){console.warn("Loading state skipped:",e.message);}
+  }
   if(data.startsWith("lang:")){const lang=data.endsWith("en")?"en":"id";await saveUser(env,q.from,lang);await send(env,chat,tr(lang,"changed"));await showMain(env,chat,q.from);return;}
   if(data==="gate:check"){
     const lang=(await getUser(env,id))?.language||"id";
@@ -78,23 +81,40 @@ export async function handleUpdate(u,env){
     if(data==="adm:groups"){await stateClear(env,id);return adminPanel(env,chat,id,"groups");}
     if(data==="adm:coupons")return adminPanel(env,chat,id,"coupons");
     if(data==="adm:stats")return adminPanel(env,chat,id,"stats");
-    if(data==="adm:watermark"){const me=await tg(env,"getMe",{});return send(env,chat,"🖼️ <b>Pengaturan Watermark</b>\nEdit template dan tautan Channel/Group melalui panel web /admin.\n\nPlaceholder: {number}, {bot}, {title}.",kb([[{text:"⚙️ Buka panel admin",url:`https://botbookkeep.showjscode.workers.dev/admin`}],back(`med:back:${draftId}`)]));}
+    if(data==="adm:watermark"){return send(env,chat,"🖼️ <b>Pengaturan Watermark</b>\nEdit template dan tautan Channel/Group melalui panel web /admin.\n\nPlaceholder: {number}, {bot}, {title}.",kb([[{text:"⚙️ Buka panel admin",url:"https://botbookkeep.showjscode.workers.dev/admin"}],back("adm:home")]));}
     if(data==="adm:admin-add"){if(id!==OWNER_ID)return send(env,chat,"Hanya owner utama yang dapat menambahkan admin.");await stateSet(env,id,"admin_add");return send(env,chat,"Kirim Telegram User ID admin baru (maksimal 3 admin tambahan).");}
     if(data.startsWith("adm:admin-del:")){if(id!==OWNER_ID)return send(env,chat,"Hanya owner yang dapat menghapus admin.");await db(env,`bot_admins?telegram_id=eq.${data.split(":")[2]}`,{method:"DELETE"});return adminPanel(env,chat,id,"admins");}
     if(data==="adm:pkg-add"){await stateSet(env,id,"pkg_add_name");return send(env,chat,"Kirim nama paket VVIP:");}
     if(data.startsWith("adm:pkg-edit:")){const p=await one(env,`vip_packages?id=eq.${enc(data.split(":")[2])}&select=*`);if(!p)return;await stateSet(env,id,`pkg_edit_name:${p.id}`);return send(env,chat,`Kirim nama baru untuk paket (saat ini: ${clean(p.name)}).`);}
+    if(data.startsWith("adm:pkg-duration:")){const pid=data.split(":")[2];await stateSet(env,id,`pkg_duration:${pid}`);return send(env,chat,"Kirim durasi paket dalam hari (0 = permanen):",kb([back("adm:packages")]));}
     if(data.startsWith("adm:pkg-toggle:")){const p=await one(env,`vip_packages?id=eq.${enc(data.split(":")[2])}&select=*`);if(p)await db(env,`vip_packages?id=eq.${enc(p.id)}`,{method:"PATCH",body:JSON.stringify({active:!p.active})});return adminPanel(env,chat,id,"packages");}
     if(data.startsWith("adm:pkg-del:")){const pid=data.split(":")[2];const used=await one(env,`vip_orders?package_id=eq.${enc(pid)}&select=order_id`);if(used)return send(env,chat,"Paket sudah memiliki riwayat transaksi. Nonaktifkan saja agar riwayat tetap aman.",kb([back("adm:packages")]));await db(env,`vip_packages?id=eq.${enc(pid)}`,{method:"DELETE"});return adminPanel(env,chat,id,"packages");}
     if(data==="adm:group-add"){await stateSet(env,id,"group_add_name");return send(env,chat,"Kirim nama grup/channel:",kb([back("adm:groups"),[{text:"❌ Batal",callback_data:"adm:groups"}]]));}
     if(data.startsWith("adm:group-del:")){await db(env,`force_join?id=eq.${Number(data.split(":")[2])}`,{method:"DELETE"});return adminPanel(env,chat,id,"groups");}
-    if(data.startsWith("adm:group-edit:")){const g=await one(env,`force_join?id=eq.${Number(data.split(":")[2])}&select=*`);if(g)return send(env,chat,`Edit grup ${clean(g.name)}:\nGunakan panel web /admin untuk ubah nama, link, dan chat ID.`,kb([back("adm:groups")]));}
+    if(data.startsWith("adm:group-edit:")){const gid=data.split(":")[2],g=await one(env,`force_join?id=eq.${Number(gid)}&select=*`);if(g)return send(env,chat,`Edit ${clean(g.name)}:`,kb([[{text:"✏️ Nama",callback_data:`adm:group-field:name:${gid}`}],[{text:"🔗 Link undangan",callback_data:`adm:group-field:link:${gid}`}],[{text:"🆔 Chat ID",callback_data:`adm:group-field:chat:${gid}`}],[{text:g.active?"⏸ Nonaktifkan":"▶️ Aktifkan",callback_data:`adm:group-toggle:${gid}`}],back("adm:groups")]));}
+    if(data.startsWith("adm:group-field:")){const p=data.split(":"),field=p[2],gid=p[3];await stateSet(env,id,`group_edit_${field}:${gid}`);return send(env,chat,field==="name"?"Kirim nama grup/channel:":field==="link"?"Kirim link undangan https://t.me/...":"Kirim Chat ID numerik:",kb([back(`adm:group-edit:${gid}`)]));}
+    if(data.startsWith("adm:group-toggle:")){const gid=data.split(":")[2],g=await one(env,`force_join?id=eq.${Number(gid)}&select=active`);if(g)await db(env,`force_join?id=eq.${Number(gid)}`,{method:"PATCH",body:JSON.stringify({active:!g.active})});return adminPanel(env,chat,id,"groups");}
     if(data==="adm:coupon-add"){await stateSet(env,id,"coupon_add_code");return send(env,chat,"Kirim kode diskon (huruf/angka):");}
     if(data.startsWith("adm:coupon-toggle:")){const c=await one(env,`vip_coupons?id=eq.${Number(data.split(":")[2])}&select=*`);if(c)await db(env,`vip_coupons?id=eq.${c.id}`,{method:"PATCH",body:JSON.stringify({active:!c.active})});return adminPanel(env,chat,id,"coupons");}
+    if(data==="adm:media")return adminPanel(env,chat,id,"media");
+    if(data==="adm:users")return adminPanel(env,chat,id,"users");
+    if(data==="adm:broadcast"){await stateSet(env,id,"broadcast_message");return send(env,chat,"📢 Kirim isi pesan broadcast. Bisa berupa teks, foto, video, atau dokumen; ketik /cancel untuk batal.",kb([back("adm:home")]));}
+    if(data==="adm:media-refresh")return adminPanel(env,chat,id,"media");
+    if(data.startsWith("adm:media-open:")){const mid=data.split(":")[2],m=await one(env,`media_links?id=eq.${enc(mid)}&select=*`);if(!m)return send(env,chat,"Media tidak ditemukan.",kb([back("adm:media")]));return send(env,chat,`🎬 <b>${clean(m.title)}</b>\nID: <code>${m.id}</code>\nMedia: ${(m.media||[]).length}\nHarga: Rp${Number(m.price||0).toLocaleString("id-ID")}\nDurasi: ${m.expires_minutes||"Tanpa batas"} menit\nBatas pengguna: ${m.max_access||"Tanpa batas"}\nAkses: ${m.access_count||0}\nStatus: ${m.active?"Aktif":"Nonaktif"}`,kb([[{text:"➕ Tambah media",callback_data:`adm:media-add:${mid}`}],[{text:"✏️ Ubah judul",callback_data:`adm:media-field:title:${mid}`}],[{text:"💰 Ubah harga",callback_data:`adm:media-field:price:${mid}`}],[{text:"⏳ Ubah durasi (menit)",callback_data:`adm:media-field:expiry:${mid}`}],[{text:"🔢 Ubah batas pengguna",callback_data:`adm:media-field:limit:${mid}`}],[{text:m.active?"⏸ Nonaktifkan":"▶️ Aktifkan",callback_data:`adm:media-toggle:${mid}`}],[{text:"🗑 Hapus media",callback_data:`adm:media-delete:${mid}`}],back("adm:media")]));}
+    if(data.startsWith("adm:media-field:")){const p=data.split(":"),field=p[2],mid=p[3];await stateSet(env,id,`published_${field}:${mid}`);return send(env,chat,field==="title"?"Kirim judul baru:":field==="price"?"Kirim harga Rupiah (0 = gratis):":field==="expiry"?"Kirim durasi dalam menit (0 = tanpa batas):":"Kirim batas pengguna (0 = tanpa batas):",kb([back(`adm:media-open:${mid}`)]));}
+    if(data.startsWith("adm:media-toggle:")){const mid=data.split(":")[2],m=await one(env,`media_links?id=eq.${enc(mid)}&select=active`);if(m)await db(env,`media_links?id=eq.${enc(mid)}`,{method:"PATCH",body:JSON.stringify({active:!m.active})});return adminPanel(env,chat,id,"media");}
+    if(data.startsWith("adm:media-delete:")){const mid=data.split(":")[2],used=await one(env,`media_orders?media_id=eq.${enc(mid)}&select=order_id`);if(used)await db(env,`media_links?id=eq.${enc(mid)}`,{method:"PATCH",body:JSON.stringify({active:false})});else await db(env,`media_links?id=eq.${enc(mid)}`,{method:"DELETE"});return adminPanel(env,chat,id,"media");}
+    if(data.startsWith("adm:media-add:")){const mid=data.split(":")[2];await beginUpload(env,chat,id);const d=await latestDraft(env,id);if(d)await updateDraftConfig(env,d.id,{parent_media_id:mid});return send(env,chat,"📤 Kirim media tambahan. Setelah selesai tekan Panel Tugas.",kb([[{text:"📋 Panel Tugas",callback_data:"upload:finish"}],[{text:"❌ Batal",callback_data:"upload:cancel"}]]));}
+    if(data==="adm:user-search"){await stateSet(env,id,"vip_user_search");return send(env,chat,"Kirim Telegram User ID untuk melihat dan mengatur status VIP/FREE:",kb([back("adm:users")]));}
+    if(data.startsWith("adm:user:")){const uid=data.split(":")[2],v=await one(env,`vip_members?telegram_id=eq.${uid}&select=*`);return send(env,chat,`👤 User <code>${uid}</code>\nStatus: ${v?.active&&(!v.expires_at||new Date(v.expires_at)>new Date())?"VIP":"FREE"}\nBerakhir: ${v?.expires_at||"—"}`,kb([[{text:"👑 Upgrade VIP",callback_data:`adm:user-vip:${uid}`}],[{text:"🆓 Jadikan FREE",callback_data:`adm:user-free:${uid}`}],back("adm:users")]));}
+    if(data.startsWith("adm:user-vip:")){const uid=data.split(":")[2];await stateSet(env,id,`vip_set_days:${uid}`);return send(env,chat,"Masukkan durasi VIP dalam hari (0 = permanen):",kb([back(`adm:user:${uid}`)]));}
+    if(data.startsWith("adm:user-free:")){const uid=data.split(":")[2];await db(env,`vip_members?telegram_id=eq.${uid}`,{method:"DELETE"});return send(env,chat,"✅ User sekarang FREE.",kb([back("adm:users")]));}
+
   }
   if(data==="upload:start"){if(!await isAdmin(env,id))return send(env,chat,"⛔ Khusus admin.");return beginUpload(env,chat,id);}
-  if(data==="upload:finish")return finishUpload(env,chat,id);
-  if(data==="upload:cancel")return cancelDraft(env,chat,id);
-  if(data==="upload:continue")return send(env,chat,"📤 Silakan kirim media berikutnya. Bot akan menghitung setiap media yang diterima.",kb([[{text:"📋 Panel Tugas",callback_data:"upload:finish"}],[{text:"❌ Batal",callback_data:"upload:cancel"}]]));
+  if(data==="upload:finish"){if(!await isAdmin(env,id))return send(env,chat,"⛔ Khusus admin.");return finishUpload(env,chat,id);}
+  if(data==="upload:cancel"){if(!await isAdmin(env,id))return send(env,chat,"⛔ Khusus admin.");return cancelDraft(env,chat,id);}
+  if(data==="upload:continue"){if(!await isAdmin(env,id))return send(env,chat,"⛔ Khusus admin.");return send(env,chat,"📤 Silakan kirim media berikutnya. Bot akan menghitung setiap media yang diterima.",kb([[{text:"📋 Panel Tugas",callback_data:"upload:finish"}],[{text:"❌ Batal",callback_data:"upload:cancel"}]]));}
   if(data.startsWith("med:")){
     if(!await isAdmin(env,id))return;
     const [_,action,draftId]=data.split(":");

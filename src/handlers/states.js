@@ -2,9 +2,50 @@ import { OWNER_ID, safeEqual, authorized, tg, db, send, edit, user, saveUser, is
 import { vipHome, vipList, packageDetail, about, donate, createVipOrder, settleOrder } from "../features/vip.js";
 import { latestDraft, updateDraftConfig, mediaConfig, beginUpload, extractMedia, saveIncomingMedia, finishUpload, cancelDraft, saveMediaLink, sendMediaToUser, accessMedia, settleMediaOrder, catalogPage } from "../features/media.js";
 
-export async function handleTextState(env,msg){
+export async function handleTextState(env,msg,ctx){
   const id=msg.from.id,st=await stateGet(env,id);if(!st)return false;
   const v=msg.text||"";
+
+  if(st.state.startsWith("pkg_duration:")){
+    const pid=st.state.split(":")[1],days=Number(v.trim());if(!Number.isInteger(days)||days<0||days>36500)return send(env,msg.chat.id,"Durasi harus 0 sampai 36500 hari (0 = permanen).");
+    await db(env,`vip_packages?id=eq.${enc(pid)}`,{method:"PATCH",body:JSON.stringify({duration_days:days})});await stateClear(env,id);return send(env,msg.chat.id,"✅ Durasi paket diperbarui.",kb([back("adm:packages")]));
+  }
+  if(st.state.startsWith("group_edit_")){
+    const p=st.state.split(":"),field=p[0].slice("group_edit_".length),gid=p[1];let patch={};
+    if(field==="name"){if(!v.trim())return send(env,msg.chat.id,"Nama tidak boleh kosong.");patch.name=v.trim();}
+    if(field==="link"){if(!/^https:\/\/(t\.me|telegram\.me)\//i.test(v.trim()))return send(env,msg.chat.id,"Link harus https://t.me/...");patch.invite_link=v.trim();}
+    if(field==="chat"){if(!/^-?\d+$/.test(v.trim()))return send(env,msg.chat.id,"Chat ID tidak valid.");patch.chat_id=v.trim();}
+    await db(env,`force_join?id=eq.${Number(gid)}`,{method:"PATCH",body:JSON.stringify(patch)});await stateClear(env,id);return send(env,msg.chat.id,"✅ Grup/channel diperbarui.",kb([back("adm:groups")]));
+  }
+  if(st.state==="broadcast_message"){
+    if(!await isAdmin(env,id))return true;
+    const targets=await db(env,"bot_users?select=telegram_id&limit=5000");
+    const gs=await db(env,"force_join?select=chat_id,name");
+    await stateSet(env,id,"broadcast_processing");
+    await send(env,msg.chat.id,`⏳ Broadcast dimulai ke ${(targets||[]).length} pengguna dan ${(gs||[]).length} grup/channel. Hasil akan dikirim setelah proses selesai.`);
+    const work=async()=>{let ok=0,fail=0;for(const x of targets||[]){try{await tg(env,"copyMessage",{chat_id:x.telegram_id,from_chat_id:msg.chat.id,message_id:msg.message_id});ok++;}catch{fail++;}await new Promise(r=>setTimeout(r,40));}for(const g of gs||[]){try{await tg(env,"copyMessage",{chat_id:g.chat_id,from_chat_id:msg.chat.id,message_id:msg.message_id});ok++;}catch{fail++;}}await stateClear(env,id);await send(env,msg.chat.id,`📢 Broadcast selesai.\\nBerhasil: ${ok}\\nGagal: ${fail}`,kb([back("adm:home")]));};
+    const task=work().catch(async e=>{await stateClear(env,id);console.error("Broadcast failed",e);await send(env,msg.chat.id,`❌ Broadcast gagal: ${clean(e.message)}`);});
+    if(ctx?.waitUntil)ctx.waitUntil(task);else await task;return true;
+  }
+  if(st.state==="vip_user_search"){
+    const uid=v.trim();if(!/^\d+$/.test(uid))return send(env,msg.chat.id,"Masukkan Telegram User ID berupa angka.");
+    await stateClear(env,id);const m=await one(env,`vip_members?telegram_id=eq.${uid}&select=*`);
+    return send(env,msg.chat.id,`👤 User <code>${uid}</code>\\nStatus: ${m?.active&&(!m.expires_at||new Date(m.expires_at)>new Date())?"VIP":"FREE"}\\nBerakhir: ${m?.expires_at||"—"}`,kb([[{text:"👑 Upgrade VIP",callback_data:`adm:user-vip:${uid}`}],[{text:"🆓 Jadikan FREE",callback_data:`adm:user-free:${uid}`}],back("adm:users")]));
+  }
+  if(st.state.startsWith("vip_set_days:")){
+    const uid=st.state.split(":")[1],days=Number(v.trim());
+    if(!Number.isInteger(days)||days<0||days>36500)return send(env,msg.chat.id,"Masukkan jumlah hari 0 sampai 36500 (0 = permanen).");
+    const expiry=days===0?null:new Date(Date.now()+days*86400000).toISOString();
+    await db(env,"vip_members?on_conflict=telegram_id",{method:"POST",headers:{"Prefer":"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({telegram_id:Number(uid),active:true,expires_at:expiry,updated_by:id,updated_at:new Date().toISOString()})});
+    await stateClear(env,id);return send(env,msg.chat.id,`✅ User ${uid} sekarang VIP${days?` selama ${days} hari`:" permanen"}.`,kb([back(`adm:user:${uid}`)]));
+  }
+  if(st.state.startsWith("published_")){
+    const [field,mid]=st.state.slice("published_".length).split(":");let value;
+    if(field==="title"){if(!v.trim())return send(env,msg.chat.id,"Judul tidak boleh kosong.");value={title:v.trim()};}
+    else {const n=Number(v.trim());if(!Number.isInteger(n)||n<0)return send(env,msg.chat.id,"Masukkan angka 0 atau lebih.");if(field==="expiry"&&n>2820)return send(env,msg.chat.id,"Durasi maksimal 2820 menit (47 jam).");value=field==="price"?{price:n}:field==="expiry"?{expires_minutes:n||null}:{max_access:n||null};}
+    await db(env,`media_links?id=eq.${enc(mid)}`,{method:"PATCH",body:JSON.stringify(value)});
+    await stateClear(env,id);return send(env,msg.chat.id,"✅ Pengaturan media berhasil diperbarui.",kb([back(`adm:media-open:${mid}`)]));
+  }
   if(v==="/cancel"){await stateClear(env,id);await send(env,msg.chat.id,"❎ Proses dibatalkan.");return true;}
   if(st.state==="admin_add"){
     const n=Number(v);if(!Number.isSafeInteger(n)||n<=0)return send(env,msg.chat.id,"Masukkan Telegram User ID numerik.");
@@ -29,7 +70,7 @@ export async function handleTextState(env,msg){
   if(st.state.startsWith("pkg_add_link|")||st.state.startsWith("pkg_edit_link:")){
     const p=st.state.split("|"),editId=st.state.startsWith("pkg_edit_link:")?st.state.split(":")[1]:null;
     if(!/^https:\/\/(t\.me|telegram\.me)\//i.test(v.trim()))return send(env,msg.chat.id,"Link harus berupa https://t.me/...");
-    const row={name:p[1],description:p[2],price:Number(p[3]),invite_link:v.trim(),active:true,sort_order:10};
+    const row={name:p[1],description:p[2],price:Number(p[3]),invite_link:v.trim(),duration_days:30,active:true,sort_order:10};
     if(editId)await db(env,`vip_packages?id=eq.${enc(editId)}`,{method:"PATCH",body:JSON.stringify(row)});
     else{row.id=slug(p[1]);await db(env,"vip_packages",{method:"POST",body:JSON.stringify(row)});}
     await stateClear(env,id);await send(env,msg.chat.id,"✅ Paket berhasil disimpan.");return true;
