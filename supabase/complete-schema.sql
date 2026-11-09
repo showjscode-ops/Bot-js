@@ -32,9 +32,12 @@ create table if not exists public.media_drafts (
 create table if not exists public.media_links (
  id text primary key, owner_id bigint not null, title text not null, media jsonb not null,
  expires_at timestamptz, expires_minutes integer, max_access integer, access_count integer not null default 0,
+ price integer not null default 0 check (price >= 0),
  required_groups jsonb not null default '[]'::jsonb, allowed_users jsonb not null default '[]'::jsonb,
  active boolean not null default true, created_at timestamptz not null default now()
 );
+alter table public.media_links add column if not exists price integer not null default 0;
+
 create table if not exists public.media_orders (
  order_id text primary key, telegram_id bigint not null, media_id text not null references public.media_links(id),
  amount integer not null, status text not null default 'PENDING', cashi_order_id text, checkout_url text,
@@ -66,7 +69,7 @@ create table if not exists public.bot_settings (
   key text primary key, value jsonb not null default '{}'::jsonb, updated_at timestamptz not null default now()
 );
 insert into public.bot_settings(key,value) values
- ('watermark_template', to_jsonb(E'Media ke {number}\nBot: {bot}')),
+ ('watermark_template', to_jsonb(E'Media ke {number}\nBot: {bot}'::text)),
  ('watermark_links', '[{"label":"Channel","url":"https://t.me/+NrHk5eHAiTFiNzc1"},{"label":"Group","url":"https://t.me/Jsshowfile"}]'::jsonb)
 on conflict(key) do nothing;
 alter table public.bot_settings enable row level security;
