@@ -26,6 +26,8 @@ export async function db(env,path,opts={}){
   const t=await r.text();return t?JSON.parse(t):null;
 }
 export async function send(env,chat,text,markup){return tg(env,"sendMessage",{chat_id:chat,text,parse_mode:"HTML",...(markup?{reply_markup:markup}:{})});}
+export async function delMessage(env,chat,message){try{return await tg(env,"deleteMessage",{chat_id:chat,message_id:message});}catch(e){console.warn("Could not delete chat message:",e.message);return null;}}
+export const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 export async function edit(env,chat,message,text,markup){return tg(env,"editMessageText",{chat_id:chat,message_id:message,text,parse_mode:"HTML",...(markup?{reply_markup:markup}:{})});}
 export async function user(env,id){return one(env,`bot_users?telegram_id=eq.${id}&select=*`);}
 export async function saveUser(env,u,language){

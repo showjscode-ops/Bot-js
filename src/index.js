@@ -16,7 +16,20 @@ export default {
     }
     if (url.pathname === "/webhook" && request.method === "POST") {
       if (!env.TELEGRAM_WEBHOOK_SECRET || request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.TELEGRAM_WEBHOOK_SECRET) return new Response("Unauthorized", {status:401});
-      try { const update = await request.json(); await handleUpdate(update, env); return new Response("ok"); }
+      try {
+        const update = await request.json();
+        await handleUpdate(update, env);
+        // Keep private bot chats tidy: remove the user's just-processed message
+        // and the old inline-menu message after a callback has been handled.
+        const { tg } = await import("./core.js");
+        if (update.message?.chat?.type === "private" && update.message?.message_id) {
+          try { await tg(env, "deleteMessage", { chat_id: update.message.chat.id, message_id: update.message.message_id }); } catch (e) { console.warn("Incoming message cleanup skipped:", e.message); }
+        }
+        if (update.callback_query?.message?.chat?.type === "private" && update.callback_query?.message?.message_id) {
+          try { await tg(env, "deleteMessage", { chat_id: update.callback_query.message.chat.id, message_id: update.callback_query.message.message_id }); } catch (e) { console.warn("Previous menu cleanup skipped:", e.message); }
+        }
+        return new Response("ok");
+      }
       catch (e) { console.error("Telegram webhook failed:", e); return new Response("error", {status:500}); }
     }
     if (url.pathname === "/cashi/webhook" && request.method === "POST") {
