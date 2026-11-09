@@ -44,13 +44,24 @@ export async function isAdmin(env,id){
 }
 export async function getAdmins(env){return (await db(env,"bot_admins?select=*&order=created_at.asc"))||[];}
 export async function groups(env){return (await db(env,"force_join?active=eq.true&select=*&order=created_at.asc"))||[];}
-export async function joinedAll(env,id){
-  for(const g of await groups(env)){const r=await tg(env,"getChatMember",{chat_id:g.chat_id,user_id:id});if(!r.ok||!["member","administrator","creator"].includes(r.result?.status))return false;}return true;
+export async function joinedAll(env,id,selectedGroups=null){
+  const gs=selectedGroups || await groups(env);
+  for(const g of gs){
+    try {
+      const r=await tg(env,"getChatMember",{chat_id:g.chat_id,user_id:id});
+      if(!["member","administrator","creator"].includes(r.result?.status))return false;
+    } catch(e) {
+      console.warn("Force-join membership check failed",g.id,e.message);
+      return false;
+    }
+  }
+  return true;
 }
 export async function gate(env,chat,id,lang){
   const gs=await groups(env);if(!gs.length)return true;
-  if(await joinedAll(env,id))return true;
-  await send(env,chat,"🔒 <b>Gabung terlebih dahulu</b>\nSilakan bergabung ke semua grup/channel berikut, lalu tekan Verifikasi.",kb([...gs.map(g=>[{text:g.name,url:g.invite_link}]),[{text:"✅ Verifikasi",callback_data:"gate:check"}]]));return false;
+  if(await joinedAll(env,id,gs))return true;
+  const isEn=lang==="en";
+  await send(env,chat,isEn?"🔒 <b>Join required</b>\nJoin every channel/group below, then tap Verify.":"🔒 <b>Wajib bergabung</b>\nSilakan bergabung ke semua grup/channel berikut, lalu tekan Verifikasi.",kb([...gs.map(g=>[{text:g.name,url:g.invite_link}]),[{text:isEn?"✅ Verify":"✅ Verifikasi",callback_data:"gate:check"}]]));return false;
 }
 export async function packages(env){return (await db(env,"vip_packages?active=eq.true&select=*&order=sort_order.asc,created_at.asc"))||[];}
 export async function stateSet(env,id,state){await db(env,"bot_states?on_conflict=telegram_id",{method:"POST",headers:{"Prefer":"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({telegram_id:id,state,updated_at:new Date().toISOString()})});}
