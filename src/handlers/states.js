@@ -57,7 +57,7 @@ export async function handleTextState(env,msg){
     await stateClear(env,id);return mediaConfig(env,msg.chat.id,d.id);
   }
   if(st.state.startsWith("media_custom_expiry:")){
-    const minutes=Number(v),draftId=st.state.split(":")[1];if(!Number.isInteger(minutes)||minutes<=0||minutes>525600)return send(env,msg.chat.id,"Masukkan durasi dalam menit (1 sampai 525600).",kb([[{text:"❌ Batal",callback_data:`med:cancel:${draftId}`}]]));
+    const minutes=Number(v),draftId=st.state.split(":")[1];if(!Number.isInteger(minutes)||minutes<=0||minutes>2820)return send(env,msg.chat.id,"Masukkan durasi dalam menit (1 sampai 2820 (maksimal 47 jam)).",kb([[{text:"❌ Batal",callback_data:`med:cancel:${draftId}`}]]));
     await updateDraftConfig(env,draftId,{expires_minutes:minutes,expires_hours:null});await stateClear(env,id);return mediaConfig(env,msg.chat.id,draftId);
   }
   if(st.state==="media_price"){

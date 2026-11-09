@@ -28,7 +28,11 @@ export async function handleUpdate(u,env){
     if(text==="/setlanguage"){return send(env,chat,tr((await getUser(env,id))?.language||"id","language"),kb([[{text:"🇮🇩 Bahasa Indonesia",callback_data:"lang:id"}],[{text:"🇬🇧 English",callback_data:"lang:en"}],[{text:"⬅️ Kembali",callback_data:"menu:home"}]]));}
     if(text==="/admin"){return adminHome(env,chat,id);}
     if(text==="/upload"){if(!await isAdmin(env,id))return send(env,chat,"⛔ Khusus admin.");return beginUpload(env,chat,id);}
-    if(text==="/cancel"){await stateClear(env,id);return send(env,chat,"Proses dibatalkan.");}
+    if(text==="/cancel"){
+      const draft=await latestDraft(env,id);
+      if(draft)await cancelDraft(env,chat,id); else {await stateClear(env,id);await send(env,chat,"Proses dibatalkan.");}
+      return;
+    }
     if(await isAdmin(env,id)&&await saveIncomingMedia(env,msg))return;
     if(await handleTextState(env,msg))return;
     if(text==="/help")return send(env,chat,tr((await getUser(env,id))?.language||"id","help"),kb([[{text:"🌐 Ganti Bahasa / Change Language",callback_data:"menu:language"}],[{text:"❤️‍🔥 Donasi / Donate",callback_data:"vip:donate"}],[{text:"⬅️ Kembali",callback_data:"menu:home"}]]));
@@ -37,7 +41,11 @@ export async function handleUpdate(u,env){
   const data=q.data||"",id=q.from.id,chat=q.message?.chat?.id||id;
   await tg(env,"answerCallbackQuery",{callback_query_id:q.id});
   if(data.startsWith("lang:")){const lang=data.endsWith("en")?"en":"id";await saveUser(env,q.from,lang);await send(env,chat,tr(lang,"changed"));await showMain(env,chat,q.from);return;}
-  if(data==="gate:check"){const lang=(await getUser(env,id))?.language||"id";await showMain(env,chat,q.from);return;}
+  if(data==="gate:check"){
+    const lang=(await getUser(env,id))?.language||"id";
+    if(await gate(env,chat,id,lang))return showMain(env,chat,q.from);
+    return;
+  }
   if(data==="menu:home")return showMain(env,chat,q.from);
   if(data==="menu:help"){const u=await getUser(env,id);return send(env,chat,tr(u?.language||"id","help"),kb([[{text:"🌐 Ganti Bahasa / Change Language",callback_data:"menu:language"}],[{text:"❤️‍🔥 Donasi / Donate",callback_data:"vip:donate"}],[{text:"⬅️ Kembali",callback_data:"menu:home"}]]));}
   if(data==="menu:language")return send(env,chat,tr((await getUser(env,id))?.language||"id","language"),kb([[{text:"🇮🇩 Bahasa Indonesia",callback_data:"lang:id"}],[{text:"🇬🇧 English",callback_data:"lang:en"}],[{text:"⬅️ Kembali",callback_data:"menu:home"}]]));
@@ -70,7 +78,7 @@ export async function handleUpdate(u,env){
     if(data==="adm:groups"){await stateClear(env,id);return adminPanel(env,chat,id,"groups");}
     if(data==="adm:coupons")return adminPanel(env,chat,id,"coupons");
     if(data==="adm:stats")return adminPanel(env,chat,id,"stats");
-    if(data==="adm:watermark"){const me=await tg(env,"getMe",{});return send(env,chat,"🖼️ <b>Pengaturan Watermark</b>\nEdit template dan tautan Channel/Group melalui panel web /admin.\n\nPlaceholder: {number}, {bot}, {title}.",kb([[{text:"⚙️ Buka panel admin",url:`https://botbookkeep.showjscode.workers.dev/admin`}],back("adm:home")]));}
+    if(data==="adm:watermark"){const me=await tg(env,"getMe",{});return send(env,chat,"🖼️ <b>Pengaturan Watermark</b>\nEdit template dan tautan Channel/Group melalui panel web /admin.\n\nPlaceholder: {number}, {bot}, {title}.",kb([[{text:"⚙️ Buka panel admin",url:`https://botbookkeep.showjscode.workers.dev/admin`}],back(`med:back:${draftId}`)]));}
     if(data==="adm:admin-add"){if(id!==OWNER_ID)return send(env,chat,"Hanya owner utama yang dapat menambahkan admin.");await stateSet(env,id,"admin_add");return send(env,chat,"Kirim Telegram User ID admin baru (maksimal 3 admin tambahan).");}
     if(data.startsWith("adm:admin-del:")){if(id!==OWNER_ID)return send(env,chat,"Hanya owner yang dapat menghapus admin.");await db(env,`bot_admins?telegram_id=eq.${data.split(":")[2]}`,{method:"DELETE"});return adminPanel(env,chat,id,"admins");}
     if(data==="adm:pkg-add"){await stateSet(env,id,"pkg_add_name");return send(env,chat,"Kirim nama paket VVIP:");}
@@ -97,7 +105,7 @@ export async function handleUpdate(u,env){
     if(action==="setmin"){const n=Number(data.split(":")[3]);await updateDraftConfig(env,draftId,{expires_minutes:n||null,expires_hours:null});return mediaConfig(env,chat,draftId);}
     if(action==="back"){await stateClear(env,id);return mediaConfig(env,chat,draftId);}
     if(action==="customexp"){await stateSet(env,id,`media_custom_expiry:${draftId}`);return send(env,chat,"Kirim durasi dalam MENIT. Contoh: 30 untuk 30 menit.\nKetik /cancel untuk batal.",kb([[{text:"❌ Batal",callback_data:`med:cancel:${draftId}`}],[{text:"⬅️ Kembali",callback_data:`med:expiry:${draftId}`}]]));}
-    if(action==="limit")return send(env,chat,"Pilih batas jumlah akses. Pengguna tercepat sesuai kuota yang akan mendapat media:",kb([[10,20,50,100,500].map(n=>({text:String(n),callback_data:`med:setlimit:${draftId}:${n}`})),[{text:"Tanpa batas",callback_data:`med:setlimit:${draftId}:0`}],back("adm:home")]));
+    if(action==="limit")return send(env,chat,"Pilih batas jumlah akses. Pengguna tercepat sesuai kuota yang akan mendapat media:",kb([[10,20,50,100,500].map(n=>({text:String(n),callback_data:`med:setlimit:${draftId}:${n}`})),[{text:"Tanpa batas",callback_data:`med:setlimit:${draftId}:0`}],back(`med:back:${draftId}`)]));
     if(action==="setlimit"){const n=Number(data.split(":")[3]);await updateDraftConfig(env,draftId,{max_access:n||null});return mediaConfig(env,chat,draftId);}
     if(action==="groups"){await stateClear(env,id);const g=await db(env,"force_join?active=eq.true&select=id,name");const d=await one(env,`media_drafts?id=eq.${enc(draftId)}&select=*`),selected=d?.config?.required_groups||[];const rows=(g||[]).map(x=>[{text:`${selected.includes(x.id)?"✅":"▫️"} ${x.name}`,callback_data:`med:group-toggle:${draftId}:${x.id}`}]);rows.push([{text:"➕ Tambah grup/channel baru",callback_data:`med:group-add:${draftId}`}],back(`med:back:${draftId}`),[{text:"❌ Batal",callback_data:`med:back:${draftId}`}]);return send(env,chat,"📢 Pilih channel/grup yang diwajibkan untuk link media ini. Klik tombol untuk memilih atau membatalkan pilihan.\nChannel yang dipilih akan ditandai pada pengaturan media.",kb(rows));}
     if(action==="group-add"){await stateSet(env,id,`group_add_name_media:${draftId}`);return send(env,chat,"Kirim nama channel/grup baru:",kb([[{text:"⬅️ Kembali",callback_data:`med:groups:${draftId}`}],[{text:"❌ Batal",callback_data:`med:groups:${draftId}`}]]));}
