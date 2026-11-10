@@ -1,7 +1,7 @@
 import { OWNER_ID, safeEqual, authorized, tg, db, send, edit, user, saveUser, isAdmin, getAdmins, groups, joinedAll, gate, packages, stateSet, stateGet, stateClear, slug, enc, one, kb, back, clean } from "../core.js";
 import { showMain } from "../features/start.js";
 import { vipHome, vipList, packageDetail, about, donate, createVipOrder, settleOrder } from "../features/vip.js";
-import { latestDraft, updateDraftConfig, mediaConfig, beginUpload, extractMedia, saveIncomingMedia, finishUpload, cancelDraft, saveMediaLink, sendMediaToUser, accessMedia, settleMediaOrder, catalogPage } from "../features/media.js";
+import { latestDraft, updateDraftConfig, mediaConfig, beginUpload, extractMedia, saveIncomingMedia, finishUpload, cancelDraft, saveMediaLink, sendMediaToUser, accessMedia, settleMediaOrder, catalogPage, openShareUnlock, registerShareReferral, createMediaDirectOrder } from "../features/media.js";
 import { adminHome, adminPanel, adminApi, adminHtml } from "../features/admin.js";
 import { cashiCreate, sendCashiQr, checkCashi, startStars, checkOrder } from "../payments/index.js";
 import { handleTextState } from "./states.js";
@@ -9,19 +9,96 @@ import { showBuyNumber } from "../features/buy-number.js";
 import { showWebsite } from "../features/website.js";
 import { tr, user as getUser } from "../core.js";
 
+
+async function askLanguage(env,chat){
+  return send(env,chat,"🌐 <b>Pilih bahasa / Choose your language</b>",kb([
+    [{text:"🇮🇩 Bahasa Indonesia",callback_data:"lang:id"}],
+    [{text:"🇬🇧 English",callback_data:"lang:en"}]
+  ]));
+}
+
+async function resumeAfterGate(env,chat,id,from){
+  const pending=await stateGet(env,id);
+  const state=pending?.state||"";
+  if(state.startsWith("pending_media:")){
+    const token=state.slice("pending_media:".length);
+    await stateClear(env,id);
+    return accessMedia(env,chat,id,token);
+  }
+  if(state.startsWith("pending_unlock:")){
+    const token=state.slice("pending_unlock:".length);
+    await stateClear(env,id);
+    return openShareUnlock(env,chat,id,token);
+  }
+  const current=await getUser(env,id);
+  if(!current?.language)return askLanguage(env,chat);
+  return showMain(env,chat,from);
+}
+
 export async function handleUpdate(u,env,ctx){
-  if(u.pre_checkout_query){await tg(env,"answerPreCheckoutQuery",{pre_checkout_query_id:u.pre_checkout_query.id,ok:true});return;}
-  if(u.message?.successful_payment){
-    const p=u.message.successful_payment;await db(env,"bot_donations",{method:"POST",body:JSON.stringify({telegram_id:u.message.from.id,stars:p.total_amount,currency:p.currency,payload:p.invoice_payload,telegram_charge_id:p.telegram_payment_charge_id,created_at:new Date().toISOString()})});
-    await send(env,u.message.chat.id,"❤️‍🔥 Terima kasih banyak atas dukungan Telegram Stars kamu!");return;
+  if (u.pre_checkout_query) {
+    const q = u.pre_checkout_query;
+    const parts = String(q.invoice_payload || "").split(":");
+    const expectedUser = Number(parts[1]);
+    const expectedStars = Number(parts[2]);
+    const valid = parts[0] === "donation" &&
+      Number.isSafeInteger(expectedUser) && expectedUser === Number(q.from.id) &&
+      [50, 100, 150, 200].includes(expectedStars) &&
+      q.currency === "XTR" && Number(q.total_amount) === expectedStars;
+    await tg(env, "answerPreCheckoutQuery", {
+      pre_checkout_query_id: q.id,
+      ok: valid,
+      ...(valid ? {} : { error_message: "Invoice tidak valid atau tidak sesuai. Silakan buat invoice donasi baru." })
+    });
+    return;
+  }
+  if (u.message?.successful_payment) {
+    const p = u.message.successful_payment;
+    const parts = String(p.invoice_payload || "").split(":");
+    const expectedUser = Number(parts[1]), expectedStars = Number(parts[2]);
+    if (parts[0] !== "donation" || expectedUser !== Number(u.message.from.id) ||
+        ![50, 100, 150, 200].includes(expectedStars) || p.currency !== "XTR" ||
+        Number(p.total_amount) !== expectedStars) {
+      console.error("Rejected unexpected successful_payment payload", p.invoice_payload);
+      return;
+    }
+    await db(env, "bot_donations?on_conflict=telegram_charge_id", {
+      method: "POST",
+      headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+      body: JSON.stringify({ telegram_id: u.message.from.id, stars: p.total_amount, currency: p.currency, payload: p.invoice_payload, telegram_charge_id: p.telegram_payment_charge_id, created_at: new Date().toISOString() })
+    });
+    await send(env, u.message.chat.id, "❤️‍🔥 Terima kasih banyak atas dukungan Telegram Stars kamu!");
+    return;
   }
   if(u.chat_member)return;
   if(u.message){
     const msg=u.message,id=msg.from.id,chat=msg.chat.id,text=msg.text||"";
     if(text.startsWith("/start")){
-      await saveUser(env,msg.from);
       const payload=text.split(/\s+/)[1]||"";
       const old=await user(env,id);
+      await saveUser(env,msg.from);
+      if(payload.startsWith("share_")){
+        const parts=payload.split("_");
+        const mediaToken=parts[1]||"",referrerId=Number(parts[2]||0);
+        // Catat referral pengguna baru sebelum gate, agar atribusi tidak hilang
+        // ketika pengguna harus join channel terlebih dahulu.
+        if(!old && mediaToken && referrerId) await registerShareReferral(env,id,mediaToken,referrerId);
+        if(Number(id)!==OWNER_ID && !await isAdmin(env,id)){
+          if(!await gate(env,chat,id,old?.language||"id"))return;
+        }
+        if(!old?.language)return askLanguage(env,chat);
+        return showMain(env,chat,msg.from);
+      }
+      if(payload.startsWith("unlock_")){
+        const token=payload.slice(7);
+        if(Number(id)!==OWNER_ID && !await isAdmin(env,id)){
+          if(!await gate(env,chat,id,old?.language||"id")){
+            await stateSet(env,id,`pending_unlock:${token}`);
+            return;
+          }
+        }
+        return openShareUnlock(env,chat,id,token);
+      }
       if(payload.startsWith("media_")){
         if(Number(id)!==OWNER_ID && !await isAdmin(env,id)){
           if(!await gate(env,chat,id,old?.language||"id")){await stateSet(env,id,`pending_media:${payload.slice(6)}`);return;}
@@ -49,18 +126,16 @@ export async function handleUpdate(u,env,ctx){
   }
   const q=u.callback_query;if(!q)return;
   const data=q.data||"",id=q.from.id,chat=q.message?.chat?.id||id;
-  if(data.startsWith("lang:")){const lang=data.endsWith("en")?"en":"id";await saveUser(env,q.from,lang);await send(env,chat,tr(lang,"changed"));if(Number(id)!==OWNER_ID&&!await isAdmin(env,id)&&!await gate(env,chat,id,lang))return;await showMain(env,chat,q.from);return;}
+  if(data.startsWith("lang:")){
+    const lang=data.endsWith("en")?"en":"id";
+    await saveUser(env,q.from,lang);
+    await send(env,chat,tr(lang,"changed"));
+    if(Number(id)!==OWNER_ID&&!await isAdmin(env,id)&&!await gate(env,chat,id,lang))return;
+    return resumeAfterGate(env,chat,id,q.from);
+  }
   if(data==="gate:check"){
     const lang=(await getUser(env,id))?.language||"id";
-    if(await gate(env,chat,id,lang)){
-      const pending=await stateGet(env,id);
-      if(pending?.state?.startsWith("pending_media:")){
-        const token=pending.state.slice("pending_media:".length);
-        await stateClear(env,id);
-        return accessMedia(env,chat,id,token);
-      }
-      return showMain(env,chat,q.from);
-    }
+    if(await gate(env,chat,id,lang))return resumeAfterGate(env,chat,id,q.from);
     return;
   }
   if(!data.startsWith("adm:") && Number(id)!==OWNER_ID && !await isAdmin(env,id)){
@@ -75,10 +150,29 @@ export async function handleUpdate(u,env,ctx){
   if(data==="feature:number")return showBuyNumber(env,chat,id);
    if(data==="feature:website")return showWebsite(env,chat,id);
    if(data.startsWith("feature:"))return send(env,chat,"Fitur ini sedang disiapkan.",kb([back("menu:home")]));
+  if(data.startsWith("media:progress:"))return openShareUnlock(env,chat,id,data.slice("media:progress:".length),false);
+  if(data.startsWith("media:direct:")){
+    const token=data.slice("media:direct:".length),item=await one(env,`media_links?id=eq.${enc(token)}&active=eq.true&select=*`);
+    if(!item)return send(env,chat,"Media tidak ditemukan.");
+    const price=Number(item.direct_price||0);
+    if(price<=0)return send(env,chat,`⚡ <b>Konfirmasi Langsung Akses</b>\nMedia: ${clean(item.title)}\nHarga: <b>GRATIS</b>\n\nLanjutkan membuka media sekarang?`,kb([[{text:"✅ Ya, buka sekarang",callback_data:`media:free:${token}`}],[{text:"⬅️ Kembali",callback_data:`media:progress:${token}`}]]));
+    return send(env,chat,`⚡ <b>Lanjutkan Langsung Akses?</b>\nMedia: ${clean(item.title)}\nHarga: <b>Rp${price.toLocaleString("id-ID")}</b>\n\nJika setuju, bot akan membuat QRIS Cashi dengan nominal yang sama. Media otomatis terbuka setelah pembayaran terverifikasi.`,kb([[{text:`✅ Setuju · Rp${price.toLocaleString("id-ID")}`,callback_data:`media:direct-confirm:${token}`}],[{text:"❌ Batal",callback_data:`media:progress:${token}`}]]));
+  }
+  if(data.startsWith("media:direct-confirm:")){
+    try{return await createMediaDirectOrder(env,chat,id,data.slice("media:direct-confirm:".length));}
+    catch(e){return send(env,chat,`❌ ${clean(e.message)}`,kb([back("feature:media")]));}
+  }
+  if(data.startsWith("media:free:")){
+    const token=data.slice("media:free:".length),item=await one(env,`media_links?id=eq.${enc(token)}&active=eq.true&select=*`);
+    if(!item)return send(env,chat,"Media tidak ditemukan.");
+    if(Number(item.direct_price||0)>0)return send(env,chat,"Akses ini tidak gratis. Silakan pilih Langsung Akses dan selesaikan pembayaran.");
+    await db(env,"share_unlocks?on_conflict=media_id,owner_id",{method:"POST",headers:{Prefer:"resolution=ignore-duplicates,return=minimal"},body:JSON.stringify({media_id:token,owner_id:id})});
+    return accessMedia(env,chat,id,token);
+  }
   if(data==="catalog:noop")return;
   if(data.startsWith("catalog:page:")){const p=data.split(":");return catalogPage(env,chat,Number(p[2]),decodeURIComponent(p.slice(3).join(":")||""));}
   if(data==="catalog:search"){await stateSet(env,id,"media_catalog_search");return send(env,chat,"Kirim judul atau sebagian judul media yang ingin dicari. Ketik /cancel untuk batal.");}
-  if(data.startsWith("catalog:open:")){const token=data.slice("catalog:open:".length);const item=await one(env,`media_links?id=eq.${enc(token)}&active=eq.true&select=*`);if(!item)return send(env,chat,"Media tidak ditemukan atau sudah tidak aktif.",kb([back("feature:media")]));await send(env,chat,`🎬 <b>${clean(item.title)}</b>\nJumlah media: ${(item.media||[]).length}\n${Number(item.price)>0?`Harga: Rp${Number(item.price).toLocaleString("id-ID")}`:"Gratis"}\n\nMenyiapkan akses media...`);return accessMedia(env,chat,id,token);}
+  if(data.startsWith("catalog:open:")){const token=data.slice("catalog:open:".length);return accessMedia(env,chat,id,token);}
   if(data==="vip:home")return vipHome(env,chat);
   if(data==="vip:list")return vipList(env,chat);
   if(data==="vip:about")return about(env,chat);
@@ -124,8 +218,8 @@ export async function handleUpdate(u,env,ctx){
     if(data==="adm:users")return adminPanel(env,chat,id,"users");
     if(data==="adm:broadcast"){await stateSet(env,id,"broadcast_message");return send(env,chat,"📢 Kirim isi pesan broadcast. Bisa berupa teks, foto, video, atau dokumen; ketik /cancel untuk batal.",kb([back("adm:home")]));}
     if(data==="adm:media-refresh")return adminPanel(env,chat,id,"media");
-    if(data.startsWith("adm:media-open:")){const mid=data.split(":")[2],m=await one(env,`media_links?id=eq.${enc(mid)}&select=*`);if(!m)return send(env,chat,"Media tidak ditemukan.",kb([back("adm:media")]));return send(env,chat,`🎬 <b>${clean(m.title)}</b>\nID: <code>${m.id}</code>\nMedia: ${(m.media||[]).length}\nHarga: Rp${Number(m.price||0).toLocaleString("id-ID")}\nDurasi: ${m.expires_minutes||"Tanpa batas"} menit\nBatas pengguna: ${m.max_access||"Tanpa batas"}\nAkses: ${m.access_count||0}\nStatus: ${m.active?"Aktif":"Nonaktif"}`,kb([[{text:"➕ Tambah media",callback_data:`adm:media-add:${mid}`}],[{text:"✏️ Ubah judul",callback_data:`adm:media-field:title:${mid}`}],[{text:"💰 Ubah harga",callback_data:`adm:media-field:price:${mid}`}],[{text:"⏳ Ubah durasi (menit)",callback_data:`adm:media-field:expiry:${mid}`}],[{text:"🔢 Ubah batas pengguna",callback_data:`adm:media-field:limit:${mid}`}],[{text:m.active?"⏸ Nonaktifkan":"▶️ Aktifkan",callback_data:`adm:media-toggle:${mid}`}],[{text:"🗑 Hapus media",callback_data:`adm:media-delete:${mid}`}],back("adm:media")]));}
-    if(data.startsWith("adm:media-field:")){const p=data.split(":"),field=p[2],mid=p[3];await stateSet(env,id,`published_${field}:${mid}`);return send(env,chat,field==="title"?"Kirim judul baru:":field==="price"?"Kirim harga Rupiah (0 = gratis):":field==="expiry"?"Kirim durasi dalam menit (0 = tanpa batas):":"Kirim batas pengguna (0 = tanpa batas):",kb([back(`adm:media-open:${mid}`)]));}
+    if(data.startsWith("adm:media-open:")){const mid=data.split(":")[2],m=await one(env,`media_links?id=eq.${enc(mid)}&select=*`);if(!m)return send(env,chat,"Media tidak ditemukan.",kb([back("adm:media")]));return send(env,chat,`🎬 <b>${clean(m.title)}</b>\nID: <code>${m.id}</code>\nMedia: ${(m.media||[]).length}\nHarga Langsung Akses: Rp${Number(m.direct_price||0).toLocaleString("id-ID")}\nDurasi: ${m.expires_minutes||"Tanpa batas"} menit\nBatas pengguna: ${m.max_access||"Tanpa batas"}\nAkses: ${m.access_count||0}\nStatus: ${m.active?"Aktif":"Nonaktif"}`,kb([[{text:"➕ Tambah media",callback_data:`adm:media-add:${mid}`}],[{text:"✏️ Ubah judul",callback_data:`adm:media-field:title:${mid}`}],[{text:"💰 Ubah harga",callback_data:`adm:media-field:direct_price:${mid}`}],[{text:"⏳ Ubah durasi (menit)",callback_data:`adm:media-field:expiry:${mid}`}],[{text:"🔢 Ubah batas pengguna",callback_data:`adm:media-field:limit:${mid}`}],[{text:m.active?"⏸ Nonaktifkan":"▶️ Aktifkan",callback_data:`adm:media-toggle:${mid}`}],[{text:"🗑 Hapus media",callback_data:`adm:media-delete:${mid}`}],back("adm:media")]));}
+    if(data.startsWith("adm:media-field:")){const p=data.split(":"),field=p[2],mid=p[3];await stateSet(env,id,`published_${field}:${mid}`);return send(env,chat,field==="title"?"Kirim judul baru:":field==="direct_price"?"Kirim harga Langsung Akses dalam Rupiah (0 = gratis):":field==="expiry"?"Kirim durasi dalam menit (0 = tanpa batas):":"Kirim batas pengguna (0 = tanpa batas):",kb([back(`adm:media-open:${mid}`)]));}
     if(data.startsWith("adm:media-toggle:")){const mid=data.split(":")[2],m=await one(env,`media_links?id=eq.${enc(mid)}&select=active`);if(m)await db(env,`media_links?id=eq.${enc(mid)}`,{method:"PATCH",body:JSON.stringify({active:!m.active})});return adminPanel(env,chat,id,"media");}
     if(data.startsWith("adm:media-delete:")){const mid=data.split(":")[2],used=await one(env,`media_orders?media_id=eq.${enc(mid)}&select=order_id`);if(used)await db(env,`media_links?id=eq.${enc(mid)}`,{method:"PATCH",body:JSON.stringify({active:false})});else await db(env,`media_links?id=eq.${enc(mid)}`,{method:"DELETE"});return adminPanel(env,chat,id,"media");}
     if(data.startsWith("adm:media-add:")){const mid=data.split(":")[2];await beginUpload(env,chat,id);const d=await latestDraft(env,id);if(d)await updateDraftConfig(env,d.id,{parent_media_id:mid});return send(env,chat,"📤 Kirim media tambahan. Setelah selesai tekan Panel Tugas.",kb([[{text:"📋 Panel Tugas",callback_data:"upload:finish"}],[{text:"❌ Batal",callback_data:"upload:cancel"}]]));}
@@ -155,7 +249,7 @@ export async function handleUpdate(u,env,ctx){
     if(action==="group-add"){await stateSet(env,id,`group_add_name_media:${draftId}`);return send(env,chat,"Kirim nama channel/grup baru:",kb([[{text:"⬅️ Kembali",callback_data:`med:groups:${draftId}`}],[{text:"❌ Batal",callback_data:`med:groups:${draftId}`}]]));}
     if(action==="group-toggle"){const gid=Number(data.split(":")[3]),d=await one(env,`media_drafts?id=eq.${enc(draftId)}&select=*`),a=d.config?.required_groups||[];const selected=a.includes(gid)?a.filter(x=>x!==gid):[...a,gid];await updateDraftConfig(env,draftId,{required_groups:selected});const g=await one(env,`force_join?id=eq.${gid}&select=name`);await send(env,chat,a.includes(gid)?`ℹ️ ${g?.name||"Channel"} tidak lagi diwajibkan.`:`✅ ${g?.name||"Channel"} telah ditambahkan sebagai channel wajib join.`);const all=await db(env,"force_join?active=eq.true&select=id,name");const rows=(all||[]).map(x=>[{text:`${selected.includes(x.id)?"✅":"▫️"} ${x.name}`,callback_data:`med:group-toggle:${draftId}:${x.id}`}]);rows.push(back(`med:back:${draftId}`),[{text:"✅ Selesai memilih",callback_data:`med:back:${draftId}`}]);return send(env,chat,`Channel wajib join dipilih: ${selected.length}`,kb(rows));}
     if(action==="allow"){await stateSet(env,id,"media_allowed_user");return send(env,chat,"Kirim Telegram User ID yang diizinkan, pisahkan dengan koma. Kosongkan dengan /cancel untuk batal.");}
-    if(action==="price"){await stateSet(env,id,"media_price");return send(env,chat,"Masukkan harga Rupiah. Isi 0 untuk media gratis:");}
+    if(action==="price"){await stateSet(env,id,"media_price");return send(env,chat,"Masukkan harga Langsung Akses: 0 atau Rp2.000 sampai Rp10.000.000.");}
     if(action==="title"){await stateSet(env,id,"media_title");return send(env,chat,"Masukkan judul media:");}
   }
   if(data.startsWith("media:verify:"))return accessMedia(env,chat,id,data.split(":")[2]);

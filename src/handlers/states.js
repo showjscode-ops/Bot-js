@@ -77,7 +77,7 @@ export async function handleTextState(env,msg,ctx){
   if(st.state.startsWith("published_")){
     const [field,mid]=st.state.slice("published_".length).split(":");let value;
     if(field==="title"){if(!v.trim())return send(env,msg.chat.id,"Judul tidak boleh kosong.");value={title:v.trim()};}
-    else {const n=Number(v.trim());if(!Number.isInteger(n)||n<0)return send(env,msg.chat.id,"Masukkan angka 0 atau lebih.");if(field==="expiry"&&n>2820)return send(env,msg.chat.id,"Durasi maksimal 2820 menit (47 jam).");value=field==="price"?{price:n}:field==="expiry"?{expires_minutes:n||null}:{max_access:n||null};}
+    else {const n=Number(v.trim());if(!Number.isInteger(n)||n<0)return send(env,msg.chat.id,"Masukkan angka 0 atau lebih.");if(field==="direct_price"&&n!==0&&(n<2000||n>10000000))return send(env,msg.chat.id,"Harga Langsung Akses harus 0 atau Rp2.000 sampai Rp10.000.000.");if(field==="expiry"&&n>2820)return send(env,msg.chat.id,"Durasi maksimal 2820 menit (47 jam).");value=field==="direct_price"?{direct_price:n}:field==="price"?{price:n}:field==="expiry"?{expires_minutes:n||null}:{max_access:n||null};}
     await db(env,`media_links?id=eq.${enc(mid)}`,{method:"PATCH",body:JSON.stringify(value)});
     await stateClear(env,id);return send(env,msg.chat.id,"✅ Pengaturan media berhasil diperbarui.",kb([back(`adm:media-open:${mid}`)]));
   }
