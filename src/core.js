@@ -14,7 +14,17 @@ export const TEXT={
 export const tr=(lang,key,vars={})=>Object.entries(vars).reduce((v,[k,x])=>v.replaceAll(`{${k}}`,String(x)),(TEXT[lang]||TEXT.id)[key]||TEXT.id[key]||key);
 
 export function safeEqual(a,b){if(a.length!==b.length)return false;let x=0;for(let i=0;i<a.length;i++)x|=a.charCodeAt(i)^b.charCodeAt(i);return x===0;}
-export function authorized(req,env){const h=req.headers.get("authorization")||"";if(!env.ADMIN_PASSWORD||!h.startsWith("Basic "))return false;try{return atob(h.slice(6))===`admin:${env.ADMIN_PASSWORD}`;}catch{return false;}}
+export function authorized(req,env){
+  const h=req.headers.get("authorization")||"";
+  if(!env.ADMIN_PASSWORD||!h.startsWith("Basic "))return false;
+  try {
+    const decoded=atob(h.slice(6));
+    const split=decoded.indexOf(":");
+    if(split<0)return false;
+    const username=decoded.slice(0,split),password=decoded.slice(split+1);
+    return safeEqual(username,"admin") && safeEqual(password,String(env.ADMIN_PASSWORD));
+  } catch { return false; }
+}
 export async function tg(env,method,body){
   if(!env.BOT_TOKEN) throw new Error("BOT_TOKEN belum dikonfigurasi");
   const r=await fetch(`${TG}${env.BOT_TOKEN}/${method}`,{method:"POST",headers:H,body:JSON.stringify(body)});
