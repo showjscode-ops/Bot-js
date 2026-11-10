@@ -4,16 +4,16 @@ import { latestDraft, updateDraftConfig, mediaConfig, beginUpload, extractMedia,
 
 export async function cashiCreate(env,amount,orderId){
   if(!env.CASHI_API_KEY)throw new Error("CASHI_API_KEY belum dipasang di Cloudflare Secrets");
-  const r=await fetch(`${CASHI}/create-order`,{method:"POST",headers:{"content-type":"application/json","x-api-key":env.CASHI_API_KEY},body:JSON.stringify({amount,order_id:orderId})});
+  const r=await fetch(`${CASHI}/create-order`,{method:"POST",headers:{"content-type":"application/json","x-api-key":env.CASHI_API_KEY},body:JSON.stringify({amount,order_id:orderId,kode_channel:"QRIS_CUSTOM"})});
   const d=await r.json();if(!r.ok||!d.success)throw new Error(d.message||d.error||"Cashi gagal membuat pesanan");return d;
 }
 
-export async function sendCashiQr(env,chat,caption,qrUrl,checkout,order){
+export async function sendCashiQr(env,chat,caption,qrUrl,checkout,order,backCallback="vip:home",backLabel="⬅️ Kembali ke VVIP"){
   if(qrUrl&&qrUrl.startsWith("data:image/")){
     try{const [meta,b64]=qrUrl.split(",");const mime=meta.match(/data:(.*?);base64/)?.[1]||"image/png";const bytes=Uint8Array.from(atob(b64),c=>c.charCodeAt(0));const form=new FormData();form.append("chat_id",String(chat));form.append("caption",caption);form.append("parse_mode","HTML");form.append("photo",new Blob([bytes],{type:mime}),"qris.png");await fetch(`${TG}${env.BOT_TOKEN}/sendPhoto`,{method:"POST",body:form});}catch(e){console.error("QR image send failed",e);await send(env,chat,caption);}
   }else if(qrUrl){await tg(env,"sendPhoto",{chat_id:chat,photo:qrUrl,caption,parse_mode:"HTML"});}
   else await send(env,chat,caption);
-  await send(env,chat,"Jika pembayaran sudah dilakukan, tekan tombol cek pembayaran.",kb([[{text:"🔄 Cek Pembayaran",callback_data:`paycheck:${order}`}],[{text:"🔗 Buka halaman pembayaran",url:checkout||"https://cashi.id"}],[{text:"⬅️ Kembali ke VVIP",callback_data:"vip:home"}]]));
+  await send(env,chat,"Jika pembayaran sudah dilakukan, tekan tombol cek pembayaran.",kb([[{text:"🔄 Cek Pembayaran",callback_data:`paycheck:${order}`}],[{text:"🔗 Buka halaman pembayaran",url:checkout||"https://cashi.id"}],[{text:backLabel,callback_data:backCallback}]]));
 }
 
 export async function checkCashi(env,orderId){
@@ -29,7 +29,7 @@ export async function checkOrder(env,chat,id,orderId){
   const v=await checkCashi(env,orderId);
   if(v.status==="SETTLED"){
     if(orderId.startsWith("VIP-"))await settleOrder(env,orderId,v);
-    else await settleMediaOrder(env,orderId);
+    else await settleMediaOrder(env,orderId,v);
     await send(env,chat,"✅ Pembayaran terkonfirmasi. Jika media/link belum diterima, gunakan /start untuk membuka kembali.");
   }else await send(env,chat,`⏳ Status pembayaran: ${clean(v.status||"PENDING")}. Silakan cek kembali beberapa saat lagi.`);
 }
