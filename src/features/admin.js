@@ -41,7 +41,7 @@ export async function adminPanel(env,chat,id,section){
     await send(env,chat,`📊 <b>Statistik Bot</b>\nPengguna: ${(u||[]).length}\nTransaksi VVIP berhasil: ${(o||[]).length}\nLink media dibuat: ${(m||[]).length}`,kb([back("adm:home")]));
   }
   else if(section==="media"){
-    const a=await db(env,"media_links?select=id,title,price,active,access_count&order=created_at.desc&limit=40");
+    const a=await db(env,"media_links?select=id,title,direct_price,active,access_count&order=created_at.desc&limit=40");
     const rows=(a||[]).map(x=>[{text:`${x.active?"🟢":"⚪"} ${(x.title||"Media").slice(0,32)} · ${x.id}`,callback_data:`adm:media-open:${x.id}`}]);
     await send(env,chat,`🎬 <b>Kelola Media Terbit</b>\nMenampilkan ${(a||[]).length} media terbaru. Pilih media untuk mengeditnya.`,kb([...rows,[{text:"🔄 Muat ulang",callback_data:"adm:media-refresh"}],back("adm:home")]));
   }else if(section==="users"){

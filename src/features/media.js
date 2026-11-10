@@ -1,158 +1,263 @@
-import { safeEqual, authorized, tg, db, send, edit, user, saveUser, isAdmin, isVip, getAdmins, groups, joinedAll, gate, packages, stateSet, stateGet, stateClear, slug, enc, one, kb, back, clean } from "../core.js";
-import { cashiCreate, sendCashiQr, checkCashi, startStars, checkOrder } from "../payments/index.js";
+import { OWNER_ID, tg, db, send, user, isVip, stateSet, stateGet, stateClear, slug, enc, one, kb, back, clean } from "../core.js";
+import { cashiCreate, sendCashiQr } from "../payments/index.js";
 
-export async function latestDraft(env,id){return one(env,`media_drafts?admin_id=eq.${id}&status=eq.DRAFT&select=*&order=created_at.desc`);}
+const rupiah = n => `Rp${Number(n || 0).toLocaleString("id-ID")}`;
+const BOT_USERNAME = async env => {
+  if (env.BOT_USERNAME) return String(env.BOT_USERNAME).replace(/^@/, "");
+  try { const x = await tg(env, "getMe", {}); return x.result?.username || ""; } catch { return ""; }
+};
 
-export async function updateDraftConfig(env,id,patch){const d=await one(env,`media_drafts?id=eq.${enc(id)}&select=*`);if(d)await db(env,`media_drafts?id=eq.${enc(id)}`,{method:"PATCH",body:JSON.stringify({config:{...(d.config||{}),...patch}})});}
-
-export async function mediaConfig(env,chat,id){
-  const d=await one(env,`media_drafts?id=eq.${enc(id)}&select=*`);if(!d)return;
-  const c=d.config||{},expiry=c.expires_minutes?`${c.expires_minutes} menit`:c.expires_hours?`${c.expires_hours} jam`:"Tidak dibatasi",price=Number(c.price||0)===0?"Gratis":`Rp${Number(c.price).toLocaleString("id-ID")}`;
-  const gs=await db(env,"force_join?select=id,name&active=eq.true");
-  await send(env,chat,`📤 <b>Pengaturan Media</b>\nJudul: ${clean(c.title||"(belum diisi)")}\nJumlah media: ${(d.media||[]).length}\nKadaluarsa: ${expiry}\nBatas akses: ${c.max_access||"Tidak dibatasi"}\nHarga: ${price}\nWajib join: ${(c.required_groups||[]).length} grup\nAnggota khusus: ${(c.allowed_users||[]).length}`,kb([
-    [{text:"⏳ Atur waktu kadaluarsa",callback_data:`med:expiry:${id}`}],
-    [{text:"📢 Pengaturan wajib mengikuti",callback_data:`med:groups:${id}`}],
-    [{text:"🔢 Atur batas jumlah akses",callback_data:`med:limit:${id}`}],
-    [{text:"👤 Akses anggota tertentu",callback_data:`med:allow:${id}`}],
-    [{text:"💰 Atur harga media",callback_data:`med:price:${id}`}],
-    [{text:"📝 Masukkan judul",callback_data:`med:title:${id}`}],
-    [{text:"💾 Save",callback_data:`med:save:${id}`},{text:"❌ Batal",callback_data:`med:cancel:${id}`}]
-  ]));
+export async function latestDraft(env, adminId) {
+  return one(env, `media_drafts?admin_id=eq.${adminId}&status=eq.DRAFT&select=*&order=created_at.desc`);
 }
-
-export async function beginUpload(env,chat,id){
-  await db(env,"media_drafts",{method:"POST",body:JSON.stringify({id:crypto.randomUUID(),admin_id:id,status:"DRAFT",stage:"collect",media:[],config:{price:0,required_groups:[],allowed_users:[]},created_at:new Date().toISOString()})});
-  await send(env,chat,"📤 <b>Mode Upload Media</b>\nKirim foto, video, dokumen, audio, atau animasi sebanyak yang diperlukan. Bot akan menghitung setiap media yang diterima. Setelah selesai, tekan Panel Tugas untuk mengatur link. Maksimal 200 media per link.",kb([[{text:"📋 Panel Tugas",callback_data:"upload:finish"}],[{text:"❌ Batal",callback_data:"upload:cancel"}]]));
+export async function updateDraftConfig(env, draftId, patch) {
+  const d = await one(env, `media_drafts?id=eq.${enc(draftId)}&select=*`);
+  if (!d) throw new Error("Draft upload tidak ditemukan.");
+  const config = { ...(d.config || {}), ...patch };
+  await db(env, `media_drafts?id=eq.${enc(draftId)}`, { method: "PATCH", body: JSON.stringify({ config }) });
+  return config;
 }
-
-export function extractMedia(msg){
-  if(msg.photo?.length)return {type:"photo",file_id:msg.photo[msg.photo.length-1].file_id};
-  if(msg.video)return {type:"video",file_id:msg.video.file_id};
-  if(msg.document)return {type:"document",file_id:msg.document.file_id};
-  if(msg.animation)return {type:"animation",file_id:msg.animation.file_id};
-  if(msg.audio)return {type:"audio",file_id:msg.audio.file_id};
+export function extractMedia(msg) {
+  if (msg.photo?.length) return { type: "photo", file_id: msg.photo[msg.photo.length - 1].file_id, file_unique_id: msg.photo[msg.photo.length - 1].file_unique_id, message_id: msg.message_id, chat_id: msg.chat.id, caption: msg.caption || "" };
+  for (const type of ["video", "document", "animation", "audio", "voice", "video_note"]) {
+    if (msg[type]?.file_id) return { type, file_id: msg[type].file_id, file_unique_id: msg[type].file_unique_id, message_id: msg.message_id, chat_id: msg.chat.id, caption: msg.caption || "" };
+  }
   return null;
 }
-
-export async function saveIncomingMedia(env,msg){
-  const d=await latestDraft(env,msg.from.id);if(!d||d.stage!=="collect")return false;
-  const m=extractMedia(msg);if(!m)return false;
-  const list=d.media||[];if(list.length>=200){await send(env,msg.chat.id,"⚠️ Maksimal 200 media per link.");return true;}
-  list.push(m);await db(env,`media_drafts?id=eq.${enc(d.id)}`,{method:"PATCH",body:JSON.stringify({media:list})});
-  await send(env,msg.chat.id,`✅ <b>Media ke-${list.length} berhasil diterima!</b>\n📊 Total media diterima: ${list.length}\n\nKirim media berikutnya atau buka Panel Tugas jika upload sudah selesai.`,kb([[{text:"📤 Upload lagi",callback_data:"upload:continue"},{text:"📋 Panel Tugas",callback_data:"upload:finish"}],[{text:"❌ Batalkan upload",callback_data:"upload:cancel"}]]));return true;
+export async function beginUpload(env, chat, adminId) {
+  const existing = await latestDraft(env, adminId);
+  if (existing) await db(env, `media_drafts?id=eq.${enc(existing.id)}`, { method: "DELETE" });
+  const id = crypto.randomUUID();
+  await db(env, "media_drafts", { method: "POST", body: JSON.stringify({ id, admin_id: adminId, status: "DRAFT", stage: "collect", media: [], config: { title: "", price: 0, direct_price: 0, expires_minutes: null, max_access: null, required_groups: [], allowed_users: [] } }) });
+  await send(env, chat, "📤 <b>Upload media baru</b>\n\nKirim foto/video/dokumen satu per satu. Setelah selesai, tekan Panel Tugas untuk mengatur judul dan harga akses langsung.\n\nHarga media gratis tetap bisa diberi harga Langsung Akses.", kb([[{ text: "📋 Panel Tugas", callback_data: "upload:finish" }], [{ text: "❌ Batal", callback_data: "upload:cancel" }]]));
 }
-
-export async function finishUpload(env,chat,id){
-  const d=await latestDraft(env,id);if(!d||!d.media?.length)return send(env,chat,"Belum ada media yang diunggah.");
-  await db(env,`media_drafts?id=eq.${enc(d.id)}`,{method:"PATCH",body:JSON.stringify({stage:"config"})});
-  if(d.config?.parent_media_id){const old=await one(env,`media_links?id=eq.${enc(d.config.parent_media_id)}&select=*`);if(old){await updateDraftConfig(env,d.id,{title:old.title});return saveMediaLink(env,chat,id,d.id);}}
-  await stateSet(env,id,"media_title");await send(env,chat,`📋 <b>Panel Tugas Upload</b>\n${d.media.length} media sudah diterima.\n\n📝 Masukkan judul untuk link media:`,kb([[{text:"❌ Batal",callback_data:"upload:cancel"}]]));
+export async function saveIncomingMedia(env, msg) {
+  const d = await latestDraft(env, msg.from.id);
+  if (!d || d.stage !== "collect") return false;
+  const item = extractMedia(msg);
+  if (!item) return false;
+  const media = Array.isArray(d.media) ? d.media : [];
+  media.push(item);
+  await db(env, `media_drafts?id=eq.${enc(d.id)}`, { method: "PATCH", body: JSON.stringify({ media }) });
+  await send(env, msg.chat.id, `✅ Media ke-${media.length} diterima.`, kb([[{ text: "➕ Kirim media lagi", callback_data: "upload:continue" }, { text: "📋 Panel Tugas", callback_data: "upload:finish" }], [{ text: "❌ Batal", callback_data: "upload:cancel" }]]));
+  return true;
 }
-
-export async function cancelDraft(env,chat,id){
-  const d=await latestDraft(env,id);if(d)await db(env,`media_drafts?id=eq.${enc(d.id)}`,{method:"DELETE"});
-  await stateClear(env,id);await send(env,chat,"❎ Draft dibatalkan dan data media draft di database dihapus.");
-}
-
-export async function saveMediaLink(env,chat,id,draftId){
-  const d=await one(env,`media_drafts?id=eq.${enc(draftId)}&select=*`);if(!d||d.admin_id!==id||!d.media?.length)return send(env,chat,"Draft tidak ditemukan.");
-  const c=d.config||{};if(!c.title&&!c.parent_media_id)return send(env,chat,"Judul belum diisi.");
-  const token=crypto.randomUUID().replace(/-/g,"").slice(0,12).toUpperCase();
-  const durationMinutes=c.expires_minutes?Number(c.expires_minutes):c.expires_hours?Number(c.expires_hours)*60:null;
-  const parent=c.parent_media_id||null;
-  if(parent){
-    const old=await one(env,`media_links?id=eq.${enc(parent)}&select=*`);
-    if(!old)return send(env,chat,"Media tujuan tidak ditemukan; draft tetap tersimpan.");
-    await db(env,`media_links?id=eq.${enc(parent)}`,{method:"PATCH",body:JSON.stringify({media:[...(old.media||[]),...d.media]})});
-  }else{
-    await db(env,"media_links",{method:"POST",body:JSON.stringify({id:token,owner_id:id,title:c.title,media:d.media,expires_at:null,expires_minutes:durationMinutes,max_access:c.max_access||null,access_count:0,price:Number(c.price||0),required_groups:c.required_groups||[],allowed_users:c.allowed_users||[],active:true,created_at:new Date().toISOString()})});
+export async function finishUpload(env, chat, adminId) {
+  const d = await latestDraft(env, adminId);
+  if (!d || !d.media?.length) return send(env, chat, "⚠️ Belum ada media yang diunggah. Kirim media terlebih dahulu.");
+  if (!d.config?.title) {
+    await stateSet(env, adminId, "media_title");
+    return send(env, chat, `📋 Total ${d.media.length} media diterima.\n\nKirim judul/tugas media ini:`, kb([[{ text: "❌ Batal", callback_data: "upload:cancel" }]]));
   }
-  await db(env,`media_drafts?id=eq.${enc(draftId)}`,{method:"DELETE"});await stateClear(env,id);
-  const me=await tg(env,"getMe"),username=me.result?.username||"";
-  await send(env,chat,parent?`✅ <b>${d.media.length} media berhasil ditambahkan ke ${clean(c.title||parent)}.</b>`:`✅ <b>Link media berhasil dibuat!</b>\nJudul: ${clean(c.title)}\\nLink: https://t.me/${username}?start=media_${token}\n\nBagikan link tersebut kepada pengguna.`,kb([[{text:"📤 Upload media lagi",callback_data:"upload:start"}],[{text:"🎬 Kelola Media",callback_data:"adm:media"}],[{text:"🏠 Panel Admin",callback_data:"adm:home"}]]));
+  await db(env, `media_drafts?id=eq.${enc(d.id)}`, { method: "PATCH", body: JSON.stringify({ stage: "ready" }) });
+  return mediaConfig(env, chat, d.id);
 }
-
-export async function watermarkSettings(env){
-  const rows=await db(env,"bot_settings?key=in.(watermark_template,watermark_links)&select=key,value");
-  const map=Object.fromEntries((rows||[]).map(x=>[x.key,x.value]));
-  return {template:typeof map.watermark_template==="string"?map.watermark_template:"Media ke {number}\nBot: {bot}",links:Array.isArray(map.watermark_links)?map.watermark_links:[]};
+export async function mediaConfig(env, chat, draftId) {
+  const d = await one(env, `media_drafts?id=eq.${enc(draftId)}&select=*`);
+  if (!d) return send(env, chat, "Draft tidak ditemukan.");
+  const c = d.config || {};
+  const groups = c.required_groups || [];
+  const allow = c.allowed_users || [];
+  return send(env, chat, `📋 <b>Panel Tugas Media</b>\n\n<b>Judul:</b> ${clean(c.title || "Belum diatur")}\n<b>Jumlah media:</b> ${d.media?.length || 0}\n<b>Mode share unlock:</b> 3 pengguna baru\n<b>Harga Langsung Akses:</b> ${rupiah(c.direct_price)}\n<b>Wajib join:</b> ${groups.length} grup\n<b>Pengguna khusus:</b> ${allow.length}\n<b>Hapus otomatis:</b> ${c.expires_minutes ? `${c.expires_minutes} menit` : "Tidak"}\n<b>Batas akses:</b> ${c.max_access || "Tanpa batas"}\n\nAtur harga Langsung Akses secara terpisah. Media bisa tetap berlabel gratis tetapi pengguna dapat memilih membayar untuk akses instan.`, kb([
+    [{ text: "✏️ Ubah Judul", callback_data: `med:title:${d.id}` }],
+    [{ text: `💳 Harga Langsung Akses (${rupiah(c.direct_price)})`, callback_data: `med:price:${d.id}` }],
+    [{ text: "⏳ Durasi", callback_data: `med:expiry:${d.id}` }, { text: "🔢 Batas akses", callback_data: `med:limit:${d.id}` }],
+    [{ text: "📢 Wajib Join", callback_data: `med:groups:${d.id}` }, { text: "👤 Pengguna khusus", callback_data: `med:allow:${d.id}` }],
+    [{ text: "✅ Terbitkan Media", callback_data: `med:save:${d.id}` }],
+    [{ text: "❌ Batalkan", callback_data: `med:cancel:${d.id}` }]
+  ]));
 }
-export async function catalogPage(env,chat,page=0,query=""){
-  const all=await db(env,`media_links?active=eq.true&select=id,title,price&order=created_at.desc&limit=500`);
-  const filtered=(all||[]).filter(x=>!query||String(x.title||"").toLocaleLowerCase().includes(query.toLocaleLowerCase()));
-  const size=15,total=Math.max(1,Math.ceil(filtered.length/size)),p=Math.max(0,Math.min(Number(page)||0,total-1));
-  const slice=filtered.slice(p*size,(p+1)*size);
-  const rows=slice.map(x=>[{text:`${x.title.slice(0,48)}${Number(x.price)>0?` · Rp${Number(x.price).toLocaleString("id-ID")}`:""}`,callback_data:`catalog:open:${x.id}`}]);
-  rows.push([{text:"🔎 Cari berdasarkan judul",callback_data:"catalog:search"}]);
-  if(total>1)rows.push([{text:"⬅️",callback_data:`catalog:page:${p-1}:${encodeURIComponent(query)}`,...(p===0?{callback_data:"catalog:noop"}:{})},{text:`${p+1}/${total}`,callback_data:"catalog:noop"},{text:"➡️",callback_data:`catalog:page:${p+1}:${encodeURIComponent(query)}`,...(p>=total-1?{callback_data:"catalog:noop"}:{})}]);
-  rows.push(back("menu:home"));
-  return send(env,chat,`🎬 <b>Video / Media</b>\n${filtered.length} judul tersedia. Pilih judul untuk melihat detail.\nHalaman ${p+1} dari ${total}.`,kb(rows));
+export async function cancelDraft(env, chat, adminId) {
+  const d = await latestDraft(env, adminId);
+  if (d) await db(env, `media_drafts?id=eq.${enc(d.id)}`, { method: "DELETE" });
+  await stateClear(env, adminId);
+  return send(env, chat, "❎ Draft upload dibatalkan.");
 }
-export async function sendMediaToUser(env,chat,media,title,deleteAfterMinutes=null){
-  const deleteAt=deleteAfterMinutes?new Date(Date.now()+Number(deleteAfterMinutes)*60000).toISOString():null;
-  const settings=await watermarkSettings(env);let botName="Bot";
-  try{const me=await tg(env,"getMe",{});botName=me.result?.first_name||me.result?.username||"Bot";}catch{}
-  for(let i=0;i<media.length;i++){
-    const m=media[i],num=i+1;
-    let caption=(settings.template||"Media ke {number}\nBot: {bot}").replaceAll("{number}",String(num)).replaceAll("{bot}",clean(botName)).replaceAll("{title}",clean(title||"Media"));
-    for(const link of settings.links){if(!link?.label||!link?.url||!/^https:\/\/(t\.me|telegram\.me)\//i.test(String(link.url)))continue;caption+=`\n<a href="${String(link.url).replace(/&/g,"&amp;").replace(/\"/g,"&quot;")}">${clean(link.label)}</a>`;}
-    const method=m.type==="photo"?"sendPhoto":m.type==="video"?"sendVideo":m.type==="animation"?"sendAnimation":m.type==="audio"?"sendAudio":"sendDocument";
-    const field=m.type==="photo"?"photo":m.type==="video"?"video":m.type==="animation"?"animation":m.type==="audio"?"audio":"document";
-    const sent=await tg(env,method,{chat_id:chat,[field]:m.file_id,caption,parse_mode:"HTML"});
-    if(deleteAt&&sent.result?.message_id){await db(env,"media_deliveries",{method:"POST",body:JSON.stringify({chat_id:chat,message_id:sent.result.message_id,delete_at:deleteAt})});}
-    if(i<media.length-1)await new Promise(resolve=>setTimeout(resolve,3000));
+export async function saveMediaLink(env, chat, adminId, draftId) {
+  const d = await one(env, `media_drafts?id=eq.${enc(draftId)}&admin_id=eq.${adminId}&select=*`);
+  if (!d || !d.media?.length) throw new Error("Draft tidak ditemukan atau belum berisi media.");
+  const c = d.config || {};
+  if (!String(c.title || "").trim()) throw new Error("Judul media wajib diisi.");
+  const directPrice = Number(c.direct_price ?? 0);
+  if (!Number.isInteger(directPrice) || (directPrice !== 0 && (directPrice < 2000 || directPrice > 10000000))) {
+    throw new Error("Harga Langsung Akses harus Rp0 (gratis) atau Rp2.000–Rp10.000.000.");
+  }
+  let id, row;
+  if (c.parent_media_id) {
+    const parent = await one(env, `media_links?id=eq.${enc(c.parent_media_id)}&select=*`);
+    if (!parent) throw new Error("Media utama untuk penambahan tidak ditemukan.");
+    id = parent.id;
+    row = { ...parent, media: [...(parent.media || []), ...d.media] };
+    await db(env, `media_links?id=eq.${enc(id)}`, { method: "PATCH", body: JSON.stringify({ media: row.media }) });
+  } else {
+    id = slug(c.title);
+    row = { id, owner_id: adminId, title: c.title.trim(), media: d.media, expires_minutes: c.expires_minutes || null, max_access: c.max_access || null, price: 0, direct_price: directPrice, required_groups: c.required_groups || [], allowed_users: c.allowed_users || [], active: true };
+    await db(env, "media_links", { method: "POST", body: JSON.stringify(row) });
+  }
+  await db(env, `media_drafts?id=eq.${enc(draftId)}`, { method: "DELETE" });
+  await stateClear(env, adminId);
+  return send(env, chat, `🎉 <b>${c.parent_media_id ? "Media berhasil ditambahkan!" : "Media berhasil diterbitkan!"}</b>\nJudul: ${clean(row.title)}\nJumlah media: ${row.media.length}\nHarga Langsung Akses: ${rupiah(row.direct_price)}\n\nPengguna akan diarahkan ke halaman pilihan akses saat menekan judul media.`, kb([[{ text: "🎬 Lihat katalog", callback_data: "feature:media" }], [ { text: "⬅️ Panel Admin", callback_data: "adm:media" } ]]));
+}
+async function hasUnlock(env, mediaId, telegramId) {
+  return !!(await one(env, `share_unlocks?media_id=eq.${enc(mediaId)}&owner_id=eq.${telegramId}&select=id`));
+}
+async function isAllowed(env, item, id) {
+  if (Number(id) === Number(item.owner_id) || Number(id) === Number(OWNER_ID) || await isVip(env, id)) return true;
+  if ((item.allowed_users || []).map(Number).includes(Number(id))) return true;
+  return hasUnlock(env, item.id, id);
+}
+export async function accessMedia(env, chat, id, token) {
+  const item = await one(env, `media_links?id=eq.${enc(token)}&active=eq.true&select=*`);
+  if (!item) return send(env, chat, "Media tidak ditemukan atau sudah tidak aktif.", kb([back("feature:media")]));
+  const vip = await isVip(env, id);
+  if (!vip && item.required_groups?.length) {
+    const gs = await db(env, `force_join?id=in.(${item.required_groups.join(",")})&active=eq.true&select=*`);
+    const checks = await Promise.all((gs || []).map(async g => { try { const x = await tg(env, "getChatMember", { chat_id: g.chat_id, user_id: id }); return [g, ["member", "administrator", "creator"].includes(x.result?.status)]; } catch { return [g, false]; } }));
+    const missing = checks.filter(x => !x[1]).map(x => x[0]);
+    if (missing.length) return send(env, chat, "🔒 <b>Wajib bergabung untuk media ini</b>", kb([...missing.map(g => [{ text: g.name, url: g.invite_link }]), [{ text: "🔄 Saya sudah bergabung", callback_data: `media:verify:${item.id}` }]]));
+  }
+  if (await isAllowed(env, item, id)) return sendMediaToUser(env, chat, id, item);
+  return showAccessTask(env, chat, id, item);
+}
+async function showAccessTask(env, chat, id, item) {
+  const count = await db(env, `share_referrals?media_id=eq.${enc(item.id)}&referrer_id=eq.${id}&select=id`);
+  const progress = Math.min(3, count?.length || 0);
+  const rows = [[{ text: `🔓 Share to Unlock (${progress}/3)`, callback_data: `media:progress:${item.id}` }]];
+  if (Number(item.direct_price || 0) > 0) rows.push([{ text: `⚡ Langsung Akses · ${rupiah(item.direct_price)}`, callback_data: `media:direct:${item.id}` }]);
+  else rows.push([{ text: "⚡ Langsung Akses · Gratis", callback_data: `media:free:${item.id}` }]);
+  rows.push(back("feature:media"));
+  return send(env, chat, `🎬 <b>${clean(item.title)}</b>\n\nPilih cara membuka media ini:\n\n🔓 <b>Share to Unlock</b>\nUndang 3 pengguna baru untuk memulai bot melalui link undangan kamu.\n\n⚡ <b>Langsung Akses</b>\n${Number(item.direct_price || 0) > 0 ? `Bayar ${rupiah(item.direct_price)} melalui QRIS Cashi dan media langsung terbuka setelah pembayaran terverifikasi.` : "Buka langsung tanpa pembayaran."}\n\nPilih salah satu cara di bawah.`, kb(rows));
+}
+export async function openShareUnlock(env, chat, id, token, show = true) {
+  const item = await one(env, `media_links?id=eq.${enc(token)}&active=eq.true&select=*`);
+  if (!item) return send(env, chat, "Media tidak ditemukan.");
+  if (await isAllowed(env, item, id)) return sendMediaToUser(env, chat, id, item);
+  const refs = await db(env, `share_referrals?media_id=eq.${enc(token)}&referrer_id=eq.${id}&select=id`);
+  const progress = Math.min(3, refs?.length || 0);
+  if (progress >= 3) {
+    await db(env, "share_unlocks?on_conflict=media_id,owner_id", { method: "POST", headers: { Prefer: "resolution=ignore-duplicates,return=minimal" }, body: JSON.stringify({ media_id: token, owner_id: id }) });
+    return sendMediaToUser(env, chat, id, item);
+  }
+  const username = await BOT_USERNAME(env);
+  const link = username ? `https://t.me/${username}?start=share_${token}_${id}` : "";
+  const rows = [];
+  if (link) rows.push([{ text: "📤 Bagikan link undangan", url: `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(`Buka media: ${item.title}`)}` }]);
+  rows.push([{ text: "🔄 Perbarui progres", callback_data: `media:progress:${token}` }], [{ text: "⚡ Langsung Akses", callback_data: `media:direct:${token}` }], back("feature:media"));
+  return send(env, chat, `🔓 <b>Share to Unlock</b>\n\nMedia: <b>${clean(item.title)}</b>\nProgres: <b>${progress}/3 pengguna baru</b>\n\nBagikan link undangan di bawah. Pengguna dihitung setelah membuka link dan menekan Start pada bot.`, kb(rows));
+}
+export async function registerShareReferral(env, inviteeId, token, referrerId) {
+  if (!token || !referrerId || Number(inviteeId) === Number(referrerId)) return;
+  const item = await one(env, `media_links?id=eq.${enc(token)}&active=eq.true&select=id`);
+  if (!item) return;
+  await db(env, "share_referrals?on_conflict=media_id,referrer_id,invitee_id", { method: "POST", headers: { Prefer: "resolution=ignore-duplicates,return=minimal" }, body: JSON.stringify({ media_id: token, referrer_id: referrerId, invitee_id: inviteeId }) });
+  const refs = await db(env, `share_referrals?media_id=eq.${enc(token)}&referrer_id=eq.${referrerId}&select=id`);
+  if ((refs || []).length >= 3 && !(await hasUnlock(env, token, referrerId))) {
+    await db(env, "share_unlocks?on_conflict=media_id,owner_id", { method: "POST", headers: { Prefer: "resolution=ignore-duplicates,return=minimal" }, body: JSON.stringify({ media_id: token, owner_id: referrerId }) });
+    const media = await one(env, `media_links?id=eq.${enc(token)}&select=*`);
+    if (media) await sendMediaToUser(env, referrerId, referrerId, media);
+    await send(env, referrerId, "🎉 Share to Unlock berhasil! Kamu sudah mengundang 3 pengguna baru.");
   }
 }
-
-export async function accessMedia(env,chat,id,token){
-  const m=await one(env,`media_links?id=eq.${enc(token)}&active=eq.true&select=*`);
-  if(!m)return send(env,chat,"❌ Link media tidak ditemukan atau sudah dinonaktifkan.");
-  if(m.expires_at&&Date.now()>new Date(m.expires_at).getTime())return send(env,chat,"🔥 <b>Media sudah terbakar/kedaluwarsa.</b>\nMasa berlaku link ini telah habis.");
-  const vip=await isVip(env,id);
-  if(!vip&&m.max_access&&m.access_count>=m.max_access)return send(env,chat,"⚠️ <b>Media sudah dibuka oleh semua pengguna yang mendapat kuota.</b>\nBatas akses telah tercapai. Link ini tidak menerima pengguna baru lagi.");
-  if(!vip&&(m.allowed_users||[]).length&&!(m.allowed_users||[]).includes(Number(id)))return send(env,chat,"⛔ Akun kamu tidak termasuk anggota yang diizinkan.");
-  if(!vip&&(m.required_groups||[]).length){
-    for(const gid of m.required_groups){
-      const g=await one(env,`force_join?id=eq.${Number(gid)}&active=eq.true&select=*`);
-      if(!g)return send(env,chat,"⚠️ Channel wajib join pada link ini sudah tidak tersedia. Hubungi admin.");
-      let joined=false;
-      try { const r=await tg(env,"getChatMember",{chat_id:g.chat_id,user_id:id}); joined=["member","administrator","creator"].includes(r.result?.status); }
-      catch(e){ console.warn("Required group check failed",g.id,e.message); }
-      if(!joined)return send(env,chat,`🔒 Kamu harus bergabung ke ${clean(g.name)} terlebih dahulu.`,kb([[{text:"Gabung",url:g.invite_link}],[{text:"✅ Saya sudah bergabung",callback_data:`media:verify:${token}`}],[{text:"⬅️ Kembali",callback_data:"feature:media"}]]));
+export async function sendMediaToUser(env, chat, id, item) {
+  if (!item?.media?.length) return send(env, chat, "Media belum tersedia.");
+  const isOwner = Number(id) === Number(item.owner_id) || Number(id) === Number(OWNER_ID);
+  const vip = await isVip(env, id);
+  // Reserve access atomically in Postgres; never read-modify-write access_count in JS.
+  if (!isOwner && !vip) {
+    const result = await db(env, "rpc/claim_media_access", {
+      method: "POST",
+      body: JSON.stringify({ p_media_id: item.id })
+    });
+    if (!result?.ok) return send(env, chat, "Kuota akses media habis, media kedaluwarsa, atau sudah tidak aktif.");
+  }
+  await db(env, "rpc/increment_media_view", {
+    method: "POST",
+    body: JSON.stringify({ p_media_id: item.id })
+  });
+  await send(env, chat, `🎬 <b>${clean(item.title)}</b>\nJumlah media: ${item.media.length}`);
+  for (let i = 0; i < item.media.length; i++) {
+    const m = item.media[i];
+    const caption = m.caption ? clean(m.caption) : `🎬 ${clean(item.title)} · Media ${i + 1}/${item.media.length}`;
+    let sent;
+    if (m.chat_id && m.message_id) {
+      sent = await tg(env, "copyMessage", { chat_id: chat, from_chat_id: m.chat_id, message_id: m.message_id, caption, parse_mode: "HTML" });
+    } else {
+      const field = ({ photo: "photo", video: "video", animation: "animation", audio: "audio", voice: "voice", video_note: "video_note" })[m.type] || "document";
+      const method = ({ photo: "sendPhoto", video: "sendVideo", document: "sendDocument", animation: "sendAnimation", audio: "sendAudio", voice: "sendVoice", video_note: "sendVideoNote" })[m.type] || "sendDocument";
+      sent = await tg(env, method, { chat_id: chat, [field]: m.file_id, ...(m.type !== "video_note" ? { caption, parse_mode: "HTML" } : {}) });
+    }
+    if (item.expires_minutes && sent?.result?.message_id) {
+      await db(env, "media_deliveries", { method: "POST", body: JSON.stringify({ chat_id: chat, message_id: sent.result.message_id, delete_at: new Date(Date.now() + Number(item.expires_minutes) * 60000).toISOString() }) });
     }
   }
-  if(!vip&&Number(m.price)>0){
-    const orderId=`MED-${Date.now()}-${id}`,c=await cashiCreate(env,Number(m.price),orderId);
-    await db(env,"media_orders",{method:"POST",body:JSON.stringify({order_id:orderId,telegram_id:id,media_id:m.id,amount:m.price,status:"PENDING",cashi_order_id:c.orderId||orderId,checkout_url:c.checkout_url,created_at:new Date().toISOString()})});
-    return sendCashiQr(env,chat,`🎬 <b>${clean(m.title)}</b>\nHarga: Rp${Number(m.price).toLocaleString("id-ID")}\nSelesaikan pembayaran untuk membuka media.`,c.qrUrl,c.checkout_url,orderId);
+}
+export async function catalogPage(env, chat, page = 0, search = "") {
+  const all = await db(env, `media_links?active=eq.true&select=id,title,media,views,likes,shares,direct_price,created_at&order=created_at.desc&limit=100`);
+  const rows = (all || []).filter(x => !search || x.title.toLowerCase().includes(search.toLowerCase()));
+  const start = Math.max(0, page) * 8, batch = rows.slice(start, start + 8);
+  const buttons = batch.map(x => [{ text: `🎬 ${x.title.slice(0, 48)} · ${x.views || 0} views`, callback_data: `catalog:open:${x.id}` }]);
+  const nav = [];
+  if (page > 0) nav.push({ text: "⬅️ Sebelumnya", callback_data: `catalog:page:${page - 1}:${encodeURIComponent(search)}` });
+  if (start + 8 < rows.length) nav.push({ text: "Berikutnya ➡️", callback_data: `catalog:page:${page + 1}:${encodeURIComponent(search)}` });
+  if (nav.length) buttons.push(nav);
+  buttons.push([{ text: "🔎 Cari media", callback_data: "catalog:search" }], back("menu:home"));
+  return send(env, chat, `🎬 <b>Katalog Media</b>\n${search ? `Pencarian: ${clean(search)}\n` : ""}Pilih judul media untuk membuka halaman tugas dan pilihan akses.\n\nMenampilkan ${batch.length} dari ${rows.length} media.`, kb(buttons));
+}
+export async function createMediaDirectOrder(env, chat, userId, token) {
+  const item = await one(env, `media_links?id=eq.${enc(token)}&active=eq.true&select=*`);
+  if (!item) throw new Error("Media tidak ditemukan.");
+  if (await isAllowed(env, item, userId)) return sendMediaToUser(env, chat, userId, item);
+  const amount = Number(item.direct_price || 0);
+  if (!Number.isInteger(amount) || amount < 2000 || amount > 10000000) throw new Error("Harga Langsung Akses belum valid (minimal Rp2.000 dan maksimal Rp10.000.000).");
+  const orderId = `MED-${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${userId}`;
+  const c = await cashiCreate(env, amount, orderId);
+  await db(env, "media_orders", { method: "POST", body: JSON.stringify({ order_id: orderId, telegram_id: userId, media_id: item.id, amount, status: "PENDING", cashi_order_id: c.orderId || orderId, checkout_url: c.checkout_url, created_at: new Date().toISOString() }) });
+  await sendCashiQr(env, chat, `🧾 <b>Konfirmasi Langsung Akses</b>\nMedia: ${clean(item.title)}\nHarga: <b>${rupiah(amount)}</b>\nID Pesanan: <code>${orderId}</code>\n\nScan QRIS Cashi sesuai nominal di atas. Setelah pembayaran berhasil diverifikasi, media otomatis dikirim ke chat ini.`, c.qrUrl, c.checkout_url, orderId, "feature:media", "⬅️ Kembali ke Media");
+}
+export async function settleMediaOrder(env, orderId, data = {}) {
+  const order = await one(env, `media_orders?order_id=eq.${enc(orderId)}&select=*`);
+  if (!order) return;
+  if (data.amount == null || Number(data.amount) !== Number(order.amount)) throw new Error("Nominal pembayaran media tidak cocok dengan nominal pesanan.");
+  if (order.status !== "PAID") {
+    const claimed = await db(env, `media_orders?order_id=eq.${enc(orderId)}&status=eq.PENDING`, {
+      method: "PATCH", headers: { Prefer: "return=representation" },
+      body: JSON.stringify({ status: "PAID", paid_at: new Date().toISOString() })
+    });
+    if (!claimed?.length) {
+      const latest = await one(env, `media_orders?order_id=eq.${enc(orderId)}&select=*`);
+      if (!latest || latest.status !== "PAID") return;
+    }
   }
-  const burnMinutes=Number(m.expires_minutes)||null;
-  if(burnMinutes)await send(env,chat,`⚠️ <b>PERINGATAN!</b>\nHarap simpan semua media yang Anda butuhkan.\nKarena semua media akan terbakar dalam ${burnMinutes} menit.`,null);
-  if(!vip){const claimed=await db(env,"rpc/claim_media_access",{method:"POST",body:JSON.stringify({p_media_id:token})});if(!claimed?.ok)return send(env,chat,"⚠️ Media sudah dibuka oleh semua orang yang mendapat kuota. Silakan cari link lain.");}
-  await send(env,chat,`✅ Akses <b>${clean(m.title)}</b> berhasil. Media akan dikirim satu per satu.`,null);await sendMediaToUser(env,chat,m.media,m.title,burnMinutes);return true;
+  // Unlock is idempotent. A retry can safely resume delivery if Telegram failed previously.
+  await db(env, "share_unlocks?on_conflict=media_id,owner_id", {
+    method: "POST", headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+    body: JSON.stringify({ media_id: order.media_id, owner_id: order.telegram_id })
+  });
+  const latest = await one(env, `media_orders?order_id=eq.${enc(orderId)}&select=delivery_sent_at`);
+  if (latest?.delivery_sent_at) return;
+  const item = await one(env, `media_links?id=eq.${enc(order.media_id)}&active=eq.true&select=*`);
+  if (item) {
+    await send(env, order.telegram_id, `✅ <b>Pembayaran berhasil!</b>
+Langsung Akses untuk <b>${clean(item.title)}</b> sudah aktif.`);
+    await sendMediaToUser(env, order.telegram_id, order.telegram_id, item);
+    await db(env, `media_orders?order_id=eq.${enc(orderId)}`, {
+      method: "PATCH", body: JSON.stringify({ delivery_sent_at: new Date().toISOString() })
+    });
+  } else {
+    await send(env, order.telegram_id, "Pembayaran berhasil, tetapi media sudah tidak aktif. Hubungi admin.");
+  }
 }
-
-export async function settleMediaOrder(env,orderId){
-  const o=await one(env,`media_orders?order_id=eq.${enc(orderId)}&select=*`);if(!o||o.status==="PAID")return;
-  const claimed=await db(env,`media_orders?order_id=eq.${enc(orderId)}&status=eq.PENDING`,{method:"PATCH",headers:{"Prefer":"return=representation"},body:JSON.stringify({status:"PAID",paid_at:new Date().toISOString()})});
-  if(!claimed?.length)return;
-  const m=await one(env,`media_links?id=eq.${enc(o.media_id)}&select=*`);if(!m||!m.active)return;
-  const claimedAccess=await db(env,"rpc/claim_media_access",{method:"POST",body:JSON.stringify({p_media_id:m.id})});if(!claimedAccess?.ok){await send(env,o.telegram_id,"⚠️ Maaf, kuota akses media sudah habis sebelum pembayaran selesai. Hubungi admin untuk bantuan pengembalian dana.");return;}
-  const burnMinutes=Number(m.expires_minutes)||null;if(burnMinutes)await send(env,o.telegram_id,`⚠️ <b>PERINGATAN!</b>\nHarap simpan semua media yang Anda butuhkan.\nKarena semua media akan terbakar dalam ${burnMinutes} menit.`);
-  await send(env,o.telegram_id,`✅ Pembayaran berhasil. Media <b>${clean(m.title)}</b> sedang dikirim satu per satu.`);await sendMediaToUser(env,o.telegram_id,m.media,m.title,burnMinutes);
-}
-
-
-export async function cleanupExpiredMedia(env){
-  const rows=await db(env,`media_deliveries?deleted_at=is.null&delete_at=lte.${enc(new Date().toISOString())}&select=id,chat_id,message_id&limit=100`);
-  for(const row of rows||[]){
-    try{
-      await tg(env,"deleteMessage",{chat_id:row.chat_id,message_id:row.message_id});
-      await db(env,`media_deliveries?id=eq.${row.id}&deleted_at=is.null`,{method:"PATCH",body:JSON.stringify({deleted_at:new Date().toISOString()})});
-    }catch(e){
-      // Telegram may already have removed the message or may temporarily reject deletion.
-      // Keep the row pending so the next scheduled run can retry.
-      console.warn("Media auto-delete will retry",row.id,e.message);
+export async function cleanupExpiredMedia(env) {
+  const due = await db(env, `media_deliveries?deleted_at=is.null&delete_at=lte.${encodeURIComponent(new Date().toISOString())}&select=id,chat_id,message_id&limit=25`);
+  for (const d of due || []) {
+    try {
+      await tg(env, "deleteMessage", { chat_id: d.chat_id, message_id: d.message_id });
+      await db(env, `media_deliveries?id=eq.${d.id}`, { method: "PATCH", body: JSON.stringify({ deleted_at: new Date().toISOString() }) });
+    } catch (e) {
+      // Telegram's "message to delete not found" means the desired end state is already reached.
+      if (/message to delete not found|message_id_invalid/i.test(e.message || "")) {
+        await db(env, `media_deliveries?id=eq.${d.id}`, { method: "PATCH", body: JSON.stringify({ deleted_at: new Date().toISOString() }) });
+      } else console.warn("Media cleanup will retry:", d.id, e.message);
     }
   }
 }

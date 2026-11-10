@@ -45,7 +45,7 @@ export async function createVipOrder(env,chat,userId,pkg,coupon){
     discount=c.discount_type==="percent"?Math.floor(amount*Number(c.discount_value)/100):Number(c.discount_value);
     discount=Math.min(amount-2000,Math.max(0,discount));amount-=discount;couponId=c.id;
   }
-  const orderId=`VIP-${Date.now()}-${userId}`;
+  const orderId=`VIP-${Date.now()}-${crypto.randomUUID().slice(0,8)}-${userId}`;
   const c=await cashiCreate(env,amount,orderId);
   await db(env,"vip_orders",{method:"POST",body:JSON.stringify({order_id:orderId,telegram_id:userId,package_id:pkg.id,amount,original_amount:pkg.price,discount,coupon_id:couponId,status:"PENDING",cashi_order_id:c.orderId||orderId,checkout_url:c.checkout_url,created_at:new Date().toISOString()})});
   if(couponId)await db(env,`vip_coupons?id=eq.${couponId}`,{method:"PATCH",body:JSON.stringify({used_count:(await one(env,`vip_coupons?id=eq.${couponId}&select=*`)).used_count+1})});
@@ -53,18 +53,43 @@ export async function createVipOrder(env,chat,userId,pkg,coupon){
   await sendCashiQr(env,chat,`🧾 <b>Invoice VVIP</b>\nPaket: ${clean(pkg.name)}\nHarga: Rp${amount.toLocaleString("id-ID")}\nID: <code>${orderId}</code>\n\nScan QRIS untuk membayar. Setelah berhasil, bot akan mengirim link grup secara otomatis.`,qr,c.checkout_url,orderId);
 }
 
-export async function settleOrder(env,orderId,data={}){
-  const order=await one(env,`vip_orders?order_id=eq.${enc(orderId)}&select=*`);
-  if(!order||order.status==="PAID")return;
-  if(data.amount&&Number(data.amount)<Number(order.amount))throw new Error("Nominal settlement tidak sesuai");
-  const claimed=await db(env,`vip_orders?order_id=eq.${enc(orderId)}&status=eq.PENDING`,{method:"PATCH",headers:{"Prefer":"return=representation"},body:JSON.stringify({status:"PAID",paid_at:new Date().toISOString(),gateway_data:data})});
-  if(!claimed?.length)return;
-  const pkg=await one(env,`vip_packages?id=eq.${enc(order.package_id)}&select=*`);
-  if(pkg){
-    const days=Math.max(0,Number(pkg.duration_days??30));
-    const expires=days===0?null:new Date(Date.now()+days*86400000).toISOString();
-    await db(env,"vip_members?on_conflict=telegram_id",{method:"POST",headers:{"Prefer":"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({telegram_id:order.telegram_id,active:true,expires_at:expires,note:`Paket ${pkg.name}`,updated_at:new Date().toISOString()})});
+export async function settleOrder(env, orderId, data = {}) {
+  const order = await one(env, `vip_orders?order_id=eq.${enc(orderId)}&select=*`);
+  if (!order) return;
+  if (data.amount == null || Number(data.amount) !== Number(order.amount)) throw new Error("Nominal settlement tidak cocok dengan nominal pesanan.");
+  let transitioned = false;
+  if (order.status !== "PAID") {
+    const claimed = await db(env, `vip_orders?order_id=eq.${enc(orderId)}&status=eq.PENDING`, {
+      method: "PATCH", headers: { Prefer: "return=representation" },
+      body: JSON.stringify({ status: "PAID", paid_at: new Date().toISOString(), gateway_data: data })
+    });
+    transitioned = !!claimed?.length;
+    if (!transitioned) {
+      const latest = await one(env, `vip_orders?order_id=eq.${enc(orderId)}&select=*`);
+      if (!latest || latest.status !== "PAID") return;
+    }
   }
-  if(pkg?.invite_link)await send(env,order.telegram_id,`🎉 <b>Pembayaran berhasil!</b>\nPaket: ${clean(pkg.name)}\n\nIni link undangan VVIP kamu:\n${clean(pkg.invite_link)}\n\nSegera bergabung sebelum link kedaluwarsa.`,kb([[{text:"👑 Kembali ke VVIP",callback_data:"vip:home"}]]));
+  const pkg = await one(env, `vip_packages?id=eq.${enc(order.package_id)}&select=*`);
+  if (!pkg) throw new Error("Paket VIP pesanan tidak ditemukan; perlu tindakan admin.");
+  // Reconcile membership on every settlement replay. Derive expiry from paid_at
+  // so retries do not extend the subscription repeatedly.
+  const paidOrder = await one(env, `vip_orders?order_id=eq.${enc(orderId)}&select=paid_at`);
+  const paidAt = paidOrder?.paid_at ? new Date(paidOrder.paid_at) : new Date();
+  const days = Math.max(0, Number(pkg.duration_days ?? 30));
+  const expires = days === 0 ? null : new Date(paidAt.getTime() + days * 86400000).toISOString();
+  await db(env, "vip_members?on_conflict=telegram_id", {
+    method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({ telegram_id: order.telegram_id, active: true, expires_at: expires, note: `Paket ${pkg.name}`, updated_at: new Date().toISOString() })
+  });
+  // A paid order without a delivery marker is retried on webhook/check-status replay.
+  const latest = await one(env, `vip_orders?order_id=eq.${enc(orderId)}&select=delivery_sent_at`);
+  if (latest?.delivery_sent_at) return;
+  if (!pkg.invite_link || pkg.invite_link.includes("CHANGE_ME")) {
+    await send(env, order.telegram_id, "Pembayaran berhasil, tetapi link undangan paket belum dikonfigurasi. Silakan hubungi admin.");
+    return;
+  }
+  await send(env, order.telegram_id, `🎉 <b>Pembayaran berhasil!</b>\\nPaket: ${clean(pkg.name)}\\n\\nIni link undangan VVIP kamu:\\n${clean(pkg.invite_link)}\\n\\nSegera bergabung sebelum link kedaluwarsa.`, kb([[{ text: "👑 Kembali ke VVIP", callback_data: "vip:home" }]]));
+  await db(env, `vip_orders?order_id=eq.${enc(orderId)}`, {
+    method: "PATCH", body: JSON.stringify({ delivery_sent_at: new Date().toISOString() })
+  });
 }
-
